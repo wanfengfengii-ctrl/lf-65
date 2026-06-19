@@ -73,6 +73,18 @@ export default function WarningPanel() {
         return '针位分布';
       case 'high_risk':
         return '高风险';
+      case 'break_risk':
+        return '断线风险';
+      case 'excessive_stretch':
+        return '拉伸异常';
+      case 'high_wear':
+        return '磨损预警';
+      case 'delivery_fluctuation':
+        return '送纱波动';
+      case 'angle_violation':
+        return '角度异常';
+      default:
+        return '系统';
     }
   };
 

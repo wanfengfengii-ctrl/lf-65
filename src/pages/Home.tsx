@@ -1,5 +1,5 @@
 import { Container, Grid, Title, Text, Group, Paper, Tabs } from '@mantine/core';
-import { Cpu, Info, BarChart3, ArrowRightLeft, Bell, Flame } from 'lucide-react';
+import { Cpu, Info, BarChart3, ArrowRightLeft, Bell, Flame, Layers, Activity } from 'lucide-react';
 import NeedleCylinder from '@/components/NeedleCylinder';
 import ControlPanel from '@/components/ControlPanel';
 import StatsPanel from '@/components/StatsPanel';
@@ -7,8 +7,11 @@ import SchemeManager from '@/components/SchemeManager';
 import ComparisonPanel from '@/components/ComparisonPanel';
 import WarningPanel from '@/components/WarningPanel';
 import SimulationPanel from '@/components/SimulationPanel';
+import YarnFeederPanel from '@/components/YarnFeederPanel';
+import YarnAnalysisPanel from '@/components/YarnAnalysisPanel';
 import { useCylinderStore } from '@/store/cylinderStore';
-import { HIGH_RISK_THRESHOLD } from '@/types/cylinder';
+import { HIGH_RISK_THRESHOLD, WARNING_STRETCH_THRESHOLD } from '@/types/cylinder';
+import { useEffect } from 'react';
 
 export default function Home() {
   const {
@@ -16,12 +19,22 @@ export default function Home() {
     currentSchemeId,
     schemes,
     warnings,
+    yarnFeeders,
+    showYarnPath,
+    showRiskHighlight,
+    checkYarnWarnings,
+    yarnSimulationStats,
   } = useCylinderStore();
 
   const currentScheme = schemes.find((s) => s.id === currentSchemeId);
 
   const errorCount = warnings.filter((w) => w.level === 'error').length;
   const warningCount = warnings.filter((w) => w.level === 'warning').length;
+  const yarnBreakCount = yarnSimulationStats?.breakWarnings?.length || 0;
+
+  useEffect(() => {
+    checkYarnWarnings();
+  }, [checkYarnWarnings]);
 
   return (
     <div
@@ -42,7 +55,8 @@ export default function Home() {
           bottom: 0,
           backgroundImage: `
             radial-gradient(circle at 20% 80%, rgba(0, 212, 255, 0.08) 0%, transparent 50%),
-            radial-gradient(circle at 80% 20%, rgba(255, 215, 0, 0.06) 0%, transparent 50%)
+            radial-gradient(circle at 80% 20%, rgba(255, 215, 0, 0.06) 0%, transparent 50%),
+            radial-gradient(circle at 50% 50%, rgba(255, 107, 53, 0.04) 0%, transparent 60%)
           `,
           pointerEvents: 'none',
         }}
@@ -67,7 +81,7 @@ export default function Home() {
                 </Title>
                 <Group gap="sm" mt={4}>
                   <Text size="sm" c="dimmed">
-                    Needle Cylinder Simulator
+                    Needle Cylinder Simulator · 纱线路径与送纱稳定性分析 v2.0
                   </Text>
                   {currentScheme && (
                     <Text size="xs" c="cyan.4">
@@ -77,6 +91,11 @@ export default function Home() {
                   {heatMode && (
                     <Text size="xs" c="orange.4">
                       | 🔥 热力模式
+                    </Text>
+                  )}
+                  {showYarnPath && (
+                    <Text size="xs" c="orange.4">
+                      | 🧵 纱线可见
                     </Text>
                   )}
                 </Group>
@@ -89,6 +108,7 @@ export default function Home() {
           <Grid.Col span={{ base: 12, md: 3 }} order={{ base: 2, md: 1 }}>
             <Stack gap="md">
               <ControlPanel />
+              <YarnFeederPanel />
               <SchemeManager />
             </Stack>
           </Grid.Col>
@@ -109,7 +129,7 @@ export default function Home() {
               >
                 <Group justify="space-between" w="100%" mb="xs">
                   <Title order={5} c="cyan.4">
-                    针筒视图
+                    针筒视图 · 纱线路径模拟
                   </Title>
                   <Group gap="xs">
                     <span
@@ -179,18 +199,71 @@ export default function Home() {
                   </Group>
                 </Group>
 
+                {yarnFeeders.filter(f => f.enabled).length > 0 && (
+                  <Group gap="xs" w="100%" mb="xs">
+                    {yarnFeeders.filter(f => f.enabled).map((feeder) => (
+                      <Group key={feeder.id} gap={4}>
+                        <span
+                          style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: '50%',
+                            background: feeder.color,
+                            display: 'inline-block',
+                            boxShadow: `0 0 6px ${feeder.color}`,
+                          }}
+                        />
+                        <Text size="xs" c="dimmed">
+                          {feeder.name}
+                        </Text>
+                      </Group>
+                    ))}
+                  </Group>
+                )}
+
                 <NeedleCylinder />
 
                 <Group mt="xs">
                   <Info size={14} color="#6c7a8c" />
                   <Text size="xs" c="dimmed">
-                    点击针位切换启用/停用状态 | 黄色圆圈标记花型周期起点 | 风险阈值: {HIGH_RISK_THRESHOLD} N
+                    点击针位切换启用/停用 | 黄色圆圈标记花型周期起点 | 风险阈值: {HIGH_RISK_THRESHOLD} N | 拉伸阈值: {WARNING_STRETCH_THRESHOLD}%
                   </Text>
                 </Group>
+                {showRiskHighlight && (
+                  <Group mt={4}>
+                    <Flame size={12} color="#ff4757" />
+                    <Text size="xs" c="orange.4">
+                      🔴 红色脉冲圈 = 拉伸/磨损风险区  🟠 送纱嘴标记外圆
+                    </Text>
+                  </Group>
+                )}
               </Paper>
 
-              <Tabs defaultValue="stats" variant="pills" color="cyan">
+              <Tabs defaultValue="yarn" variant="pills" color="cyan">
                 <Tabs.List grow>
+                  <Tabs.Tab
+                    value="yarn"
+                    leftSection={<Layers size={14} />}
+                    rightSection={
+                      yarnBreakCount > 0 ? (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            background: '#ff4757',
+                            color: '#fff',
+                            borderRadius: 10,
+                            padding: '0 6px',
+                            fontSize: 10,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {yarnBreakCount}
+                        </span>
+                      ) : null
+                    }
+                  >
+                    纱线分析
+                  </Tabs.Tab>
                   <Tabs.Tab
                     value="stats"
                     leftSection={<BarChart3 size={14} />}
@@ -200,23 +273,6 @@ export default function Home() {
                   <Tabs.Tab
                     value="comparison"
                     leftSection={<ArrowRightLeft size={14} />}
-                    rightSection={
-                      errorCount + warningCount > 0 ? (
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            background: '#ffd700',
-                            color: '#000',
-                            borderRadius: 10,
-                            padding: '0 6px',
-                            fontSize: 10,
-                            fontWeight: 600,
-                          }}
-                        >
-                          对比
-                        </span>
-                      ) : null
-                    }
                   >
                     方案对比
                   </Tabs.Tab>
@@ -251,6 +307,10 @@ export default function Home() {
                   </Tabs.Tab>
                 </Tabs.List>
 
+                <Tabs.Panel value="yarn" pt="md">
+                  <YarnAnalysisPanel />
+                </Tabs.Panel>
+
                 <Tabs.Panel value="stats" pt="md">
                   <StatsPanel />
                 </Tabs.Panel>
@@ -274,13 +334,14 @@ export default function Home() {
             <Stack gap="md">
               <WarningPanel />
               <SimulationPanel />
+              <YarnAnalysisPanel />
             </Stack>
           </Grid.Col>
         </Grid>
 
         <Group justify="center" mt="md">
           <Text size="xs" c="dimmed">
-            © 2024 纺织工程可视化教学工具 | 工业科技风格界面 | 织袜工艺预警与方案对比系统 v2.0
+            © 2024 纺织工程可视化教学工具 | 工业科技风格界面 | 织袜工艺预警与方案对比系统 v2.0 · 纱线路径与送纱稳定性分析模块
           </Text>
         </Group>
       </Container>

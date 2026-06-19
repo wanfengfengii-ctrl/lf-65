@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as PIXI from 'pixi.js';
-import { useCylinderStore, useHeatMapData } from '@/store/cylinderStore';
-import { Needle, HIGH_RISK_THRESHOLD } from '@/types/cylinder';
+import { useCylinderStore, useHeatMapData, calculateYarnPath, calculateDeliveryStats, detectStretchPeaks, detectWearZones, analyzeYarnStability } from '@/store/cylinderStore';
+import { Needle, HIGH_RISK_THRESHOLD, YarnFeederConfig, WARNING_STRETCH_THRESHOLD, CRITICAL_STRETCH_THRESHOLD, WARNING_WEAR_LEVEL, CRITICAL_WEAR_LEVEL } from '@/types/cylinder';
 
 const COLORS = {
   cylinderBase: 0x2a3f5f,
@@ -17,18 +17,41 @@ const COLORS = {
   ringInner: 0x1e3a5f,
 };
 
+function hexToNum(hex: string): number {
+  return parseInt(hex.replace('#', ''), 16);
+}
+
+function getRiskColor(level: number, type: 'stretch' | 'wear'): number {
+  if (type === 'stretch') {
+    if (level > CRITICAL_STRETCH_THRESHOLD) return 0xff0000;
+    if (level > WARNING_STRETCH_THRESHOLD) return 0xff4757;
+    if (level > WARNING_STRETCH_THRESHOLD * 0.6) return 0xff6b35;
+  } else {
+    if (level > CRITICAL_WEAR_LEVEL) return 0xff0000;
+    if (level > WARNING_WEAR_LEVEL) return 0xff4757;
+    if (level > WARNING_WEAR_LEVEL * 0.6) return 0xff6b35;
+  }
+  return 0;
+}
+
 export default function NeedleCylinder() {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<PIXI.Renderer | null>(null);
   const stageRef = useRef<PIXI.Container | null>(null);
   const cylinderGroupRef = useRef<PIXI.Container | null>(null);
+  const yarnPathLayerRef = useRef<PIXI.Container | null>(null);
+  const feederMarkerLayerRef = useRef<PIXI.Container | null>(null);
+  const riskHighlightLayerRef = useRef<PIXI.Container | null>(null);
   const needleSpritesRef = useRef<PIXI.Graphics[]>([]);
   const animationRef = useRef<number>(0);
   const isMounted = useRef(true);
   const isRunningRef = useRef(true);
   const rotationSpeedRef = useRef(1);
+  const rotationRef = useRef(0);
+  const totalRotationRef = useRef(0);
   const [size, setSize] = useState(400);
   const lastRiskUpdateRef = useRef(0);
+  const lastYarnUpdateRef = useRef(0);
 
   const {
     needles,
@@ -41,6 +64,15 @@ export default function NeedleCylinder() {
     continuousSimulation,
     simulationStats,
     updateSimulationStats,
+    yarnFeeders,
+    yarnSimulationEnabled,
+    showYarnPath,
+    showRiskHighlight,
+    yarnSimulationStats,
+    updateYarnSimulationStats,
+    baseTension,
+    totalNeedles,
+    addYarnBreakWarning,
   } = useCylinderStore();
 
   const heatMapData = useHeatMapData();
@@ -108,6 +140,24 @@ export default function NeedleCylinder() {
     stage.addChild(cylinderGroup);
     cylinderGroupRef.current = cylinderGroup;
 
+    const yarnPathLayer = new PIXI.Container();
+    yarnPathLayer.x = centerX;
+    yarnPathLayer.y = centerY;
+    stage.addChild(yarnPathLayer);
+    yarnPathLayerRef.current = yarnPathLayer;
+
+    const feederMarkerLayer = new PIXI.Container();
+    feederMarkerLayer.x = centerX;
+    feederMarkerLayer.y = centerY;
+    stage.addChild(feederMarkerLayer);
+    feederMarkerLayerRef.current = feederMarkerLayer;
+
+    const riskHighlightLayer = new PIXI.Container();
+    riskHighlightLayer.x = centerX;
+    riskHighlightLayer.y = centerY;
+    stage.addChild(riskHighlightLayer);
+    riskHighlightLayerRef.current = riskHighlightLayer;
+
     const baseCircle = new PIXI.Graphics();
     baseCircle.beginFill(COLORS.cylinderBase);
     baseCircle.drawCircle(0, 0, Math.min(width, height) / 2 - 40);
@@ -146,6 +196,8 @@ export default function NeedleCylinder() {
       if (cylinderGroupRef.current && isRunningRef.current) {
         const rotationDelta = rotationSpeedRef.current * deltaTime * Math.PI * 0.5;
         cylinderGroupRef.current.rotation += rotationDelta;
+        rotationRef.current += rotationDelta;
+        totalRotationRef.current += Math.abs(rotationDelta);
         
         if (continuousSimulation) {
           rotationAccumulator += Math.abs(rotationDelta);
@@ -158,6 +210,18 @@ export default function NeedleCylinder() {
             
             updateSimulationStatsFromRunning(deltaTime, rotationsPerUpdate);
           }
+        }
+      }
+
+      if (yarnSimulationEnabled && currentTime - lastYarnUpdateRef.current > 50) {
+        lastYarnUpdateRef.current = currentTime;
+        updateYarnPathVisualization();
+        updateFeederMarkers();
+        if (showRiskHighlight) {
+          updateRiskHighlights();
+        }
+        if (continuousSimulation && isRunningRef.current) {
+          updateYarnSimulationFromRunning(deltaTime);
         }
       }
 
@@ -194,6 +258,218 @@ export default function NeedleCylinder() {
       heatMapData
     );
   }, [needles, patternPeriod, highRiskThreshold, size, heatMode, heatMapData]);
+
+  useEffect(() => {
+    if (!yarnSimulationEnabled || !yarnPathLayerRef.current || !feederMarkerLayerRef.current) {
+      if (yarnPathLayerRef.current) {
+        yarnPathLayerRef.current.removeChildren();
+      }
+      if (feederMarkerLayerRef.current) {
+        feederMarkerLayerRef.current.removeChildren();
+      }
+      if (riskHighlightLayerRef.current) {
+        riskHighlightLayerRef.current.removeChildren();
+      }
+      return;
+    }
+    updateYarnPathVisualization();
+    updateFeederMarkers();
+    if (showRiskHighlight) {
+      updateRiskHighlights();
+    }
+  }, [yarnFeeders, showYarnPath, showRiskHighlight, yarnSimulationEnabled, size, totalNeedles]);
+
+  function updateYarnPathVisualization() {
+    if (!yarnPathLayerRef.current) return;
+    yarnPathLayerRef.current.removeChildren();
+
+    if (!showYarnPath || !yarnSimulationEnabled) return;
+
+    const radius = Math.min(size, size) / 2 - 60;
+    const rotation = cylinderGroupRef.current?.rotation || 0;
+
+    for (const feeder of yarnFeeders) {
+      if (!feeder.enabled) continue;
+
+      const segments = calculateYarnPath(
+        feeder,
+        needles,
+        totalNeedles,
+        rotation,
+        baseTension,
+        radius
+      );
+
+      const color = hexToNum(feeder.color);
+
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const line = new PIXI.Graphics();
+        
+        let lineColor = color;
+        let lineWidth = 2;
+        let alpha = 0.8;
+
+        if (showRiskHighlight) {
+          const maxRisk = Math.max(seg.stretchRatio, seg.wearRisk / 2);
+          if (maxRisk > CRITICAL_STRETCH_THRESHOLD) {
+            lineColor = 0xff0000;
+            lineWidth = 4;
+            alpha = 1;
+          } else if (maxRisk > WARNING_STRETCH_THRESHOLD) {
+            lineColor = 0xff4757;
+            lineWidth = 3;
+            alpha = 0.95;
+          } else if (maxRisk > WARNING_STRETCH_THRESHOLD * 0.6) {
+            lineColor = 0xff6b35;
+            lineWidth = 2.5;
+            alpha = 0.9;
+          }
+        }
+
+        line.lineStyle(lineWidth, lineColor, alpha);
+        line.moveTo(seg.from.x, seg.from.y);
+        line.lineTo(seg.to.x, seg.to.y);
+        yarnPathLayerRef.current.addChild(line);
+
+        if (showRiskHighlight && (seg.stretchRatio > WARNING_STRETCH_THRESHOLD * 0.6 || seg.wearRisk > WARNING_WEAR_LEVEL * 0.6)) {
+          const pulse = new PIXI.Graphics();
+          const pulseSize = 6 + Math.sin(Date.now() / 200 + i) * 2;
+          pulse.beginFill(lineColor, 0.3);
+          pulse.drawCircle(seg.to.x, seg.to.y, pulseSize);
+          pulse.endFill();
+          yarnPathLayerRef.current.addChild(pulse);
+        }
+      }
+
+      const flowAnim = (Date.now() / 100) % 1;
+      for (let i = 0; i < segments.length; i++) {
+        if ((i + flowAnim) % 3 < 1) {
+          const seg = segments[i];
+          const dot = new PIXI.Graphics();
+          const t = (flowAnim + (i % 1)) % 1;
+          const x = seg.from.x + (seg.to.x - seg.from.x) * t;
+          const y = seg.from.y + (seg.to.y - seg.from.y) * t;
+          dot.beginFill(color, 0.6);
+          dot.drawCircle(x, y, 3);
+          dot.endFill();
+          yarnPathLayerRef.current.addChild(dot);
+        }
+      }
+    }
+  }
+
+  function updateFeederMarkers() {
+    if (!feederMarkerLayerRef.current) return;
+    feederMarkerLayerRef.current.removeChildren();
+
+    if (!yarnSimulationEnabled) return;
+
+    const radius = Math.min(size, size) / 2 - 60;
+    const rotation = cylinderGroupRef.current?.rotation || 0;
+
+    for (const feeder of yarnFeeders) {
+      if (!feeder.enabled) continue;
+
+      const feederAngle = (feeder.position / totalNeedles) * Math.PI * 2 + rotation;
+      const markerRadius = radius + 55;
+      const x = Math.cos(feederAngle) * markerRadius;
+      const y = Math.sin(feederAngle) * markerRadius;
+      const color = hexToNum(feeder.color);
+
+      const outerGlow = new PIXI.Graphics();
+      const glowSize = 22 + Math.sin(Date.now() / 300) * 3;
+      outerGlow.beginFill(color, 0.15);
+      outerGlow.drawCircle(x, y, glowSize);
+      outerGlow.endFill();
+      feederMarkerLayerRef.current.addChild(outerGlow);
+
+      const marker = new PIXI.Graphics();
+      marker.beginFill(color, 0.9);
+      marker.drawCircle(x, y, 12);
+      marker.endFill();
+      marker.lineStyle(2, 0xffffff, 0.8);
+      marker.drawCircle(x, y, 12);
+      feederMarkerLayerRef.current.addChild(marker);
+
+      const inner = new PIXI.Graphics();
+      inner.beginFill(0xffffff, 0.9);
+      inner.drawCircle(x, y, 4);
+      inner.endFill();
+      feederMarkerLayerRef.current.addChild(inner);
+
+      const indicator = new PIXI.Graphics();
+      indicator.lineStyle(3, color, 1);
+      indicator.moveTo(x, y);
+      const lineLen = 30;
+      indicator.lineTo(
+        x + Math.cos(feederAngle) * lineLen,
+        y + Math.sin(feederAngle) * lineLen
+      );
+      feederMarkerLayerRef.current.addChild(indicator);
+    }
+  }
+
+  function updateRiskHighlights() {
+    if (!riskHighlightLayerRef.current) return;
+    riskHighlightLayerRef.current.removeChildren();
+
+    if (!showRiskHighlight || !yarnSimulationEnabled) return;
+
+    const radius = Math.min(size, size) / 2 - 60;
+    const rotation = cylinderGroupRef.current?.rotation || 0;
+    const needleSize = Math.max(4, Math.min(10, size / 48));
+
+    for (const feeder of yarnFeeders) {
+      if (!feeder.enabled) continue;
+
+      const segments = calculateYarnPath(
+        feeder,
+        needles,
+        totalNeedles,
+        rotation,
+        baseTension,
+        radius
+      );
+
+      for (const seg of segments) {
+        if (seg.to.needleId < 0) continue;
+        
+        const riskLevel = Math.max(seg.stretchRatio, seg.wearRisk / 2);
+        if (riskLevel < WARNING_STRETCH_THRESHOLD * 0.5) continue;
+
+        const needleAngle = (seg.to.needleId / totalNeedles) * Math.PI * 2 + rotation;
+        const x = Math.cos(needleAngle) * radius;
+        const y = Math.sin(needleAngle) * radius;
+
+        const highlight = new PIXI.Graphics();
+        let ringColor = 0xffd700;
+        let ringSize = needleSize + 10;
+
+        if (riskLevel > CRITICAL_STRETCH_THRESHOLD) {
+          ringColor = 0xff0000;
+          ringSize = needleSize + 18;
+        } else if (riskLevel > WARNING_STRETCH_THRESHOLD) {
+          ringColor = 0xff4757;
+          ringSize = needleSize + 14;
+        }
+
+        const pulse = Math.sin(Date.now() / 150 + seg.to.needleId) * 0.3 + 0.7;
+        highlight.lineStyle(3, ringColor, pulse);
+        highlight.drawCircle(x, y, ringSize);
+        riskHighlightLayerRef.current.addChild(highlight);
+
+        if (riskLevel > WARNING_STRETCH_THRESHOLD) {
+          const arc = new PIXI.Graphics();
+          arc.lineStyle(2, ringColor, 0.6);
+          const startAngle = needleAngle - 0.3;
+          const endAngle = needleAngle + 0.3;
+          arc.arc(x, y, ringSize + 4, startAngle, endAngle);
+          riskHighlightLayerRef.current.addChild(arc);
+        }
+      }
+    }
+  }
 
   function updateSimulationStatsFromRunning(deltaTime: number, rotations: number) {
     const { simulationStats, needles, baseTension, rotationSpeed } = useCylinderStore.getState();
@@ -244,6 +520,130 @@ export default function NeedleCylinder() {
       avgTensionOverTime: newAvgTension,
       maxTensionReached: newMaxTension,
       needleRiskStats: newRiskStats,
+    });
+  }
+
+  function updateYarnSimulationFromRunning(deltaTime: number) {
+    const state = useCylinderStore.getState();
+    if (!state.yarnSimulationStats) return;
+
+    const stats = state.yarnSimulationStats;
+    const radius = Math.min(size, size) / 2 - 60;
+    const rotation = cylinderGroupRef.current?.rotation || 0;
+    const now = Date.now();
+
+    const newRuntime = stats.totalRuntime + deltaTime;
+    const rotationsDelta = (rotationSpeedRef.current * deltaTime * 0.5);
+    const newRotations = stats.totalRotations + rotationsDelta;
+
+    const paths: Record<string, any[]> = {};
+    const deliveryStats: Record<string, any> = {};
+    let allPeaks: any[] = [];
+    const newWearAccumulation = [...stats.wearAccumulation];
+
+    for (const feeder of state.yarnFeeders) {
+      if (!feeder.enabled) continue;
+
+      const segs = calculateYarnPath(feeder, state.needles, state.totalNeedles, rotation, state.baseTension, radius);
+      paths[feeder.id] = segs;
+      deliveryStats[feeder.id] = calculateDeliveryStats(segs, state.baseTension, feeder.yarnLength);
+
+      const peaks = detectStretchPeaks(segs, now);
+      allPeaks = [...allPeaks, ...peaks];
+
+      for (const seg of segs) {
+        if (seg.to.needleId >= 0) {
+          newWearAccumulation[seg.to.needleId] = (newWearAccumulation[seg.to.needleId] || 0) + seg.wearRisk * deltaTime * 0.1;
+        }
+      }
+
+      const hist = stats.deliveryHistory[feeder.id] || [];
+      hist.push(deliveryStats[feeder.id].fluctuationPercent);
+      if (hist.length > 100) hist.shift();
+      stats.deliveryHistory[feeder.id] = hist;
+
+      const stretchHist = stats.stretchHistory[feeder.id] || [];
+      const maxStretch = Math.max(...segs.map(s => s.stretchRatio), 0);
+      stretchHist.push(maxStretch);
+      if (stretchHist.length > 100) stretchHist.shift();
+      stats.stretchHistory[feeder.id] = stretchHist;
+
+      if (deliveryStats[feeder.id].fluctuationPercent > 15) {
+        addYarnBreakWarning({
+          type: 'delivery_fluctuation',
+          level: deliveryStats[feeder.id].fluctuationPercent > 25 ? 'error' : 'warning',
+          message: `${feeder.name}: 送纱波动异常 (${deliveryStats[feeder.id].fluctuationPercent.toFixed(1)}%)`,
+          feederId: feeder.id,
+          value: deliveryStats[feeder.id].fluctuationPercent,
+          threshold: 15,
+        });
+      }
+    }
+
+    allPeaks.sort((a, b) => b.value - a.value);
+    allPeaks = allPeaks.slice(0, 20);
+
+    for (const peak of allPeaks) {
+      if (peak.severity === 'high' || peak.severity === 'medium') {
+        addYarnBreakWarning({
+          type: 'excessive_stretch',
+          level: peak.severity === 'high' ? 'error' : 'warning',
+          message: `针位 #${peak.needleId + 1}: 拉伸值过高 (${peak.value.toFixed(1)}%)`,
+          needleId: peak.needleId,
+          value: peak.value,
+          threshold: WARNING_STRETCH_THRESHOLD,
+        });
+      }
+    }
+
+    const allSegments: any[] = [];
+    for (const key of Object.keys(paths)) {
+      allSegments.push(...paths[key]);
+    }
+    const totalPasses = Math.floor(newRotations);
+    const wearZones = detectWearZones(allSegments, state.totalNeedles, totalPasses);
+
+    const frame = {
+      rotation,
+      paths,
+      deliveryStats,
+      stretchPeaks: allPeaks,
+      wearZones,
+      totalWearPerNeedle: newWearAccumulation,
+    };
+
+    const analysis = analyzeYarnStability(frame, state.yarnFeeders);
+
+    if (analysis.breakRiskScore > 70) {
+      addYarnBreakWarning({
+        type: 'break_risk',
+        level: analysis.breakRiskScore > 85 ? 'error' : 'warning',
+        message: `综合断线风险较高: ${analysis.breakRiskScore.toFixed(0)}/100`,
+        value: analysis.breakRiskScore,
+        threshold: 70,
+      });
+    }
+
+    for (const zone of wearZones) {
+      if (zone.riskLevel !== 'low') {
+        addYarnBreakWarning({
+          type: 'high_wear',
+          level: zone.riskLevel === 'high' ? 'error' : 'warning',
+          message: `易磨损区: 针位 #${zone.startNeedle + 1} - #${zone.endNeedle + 1} (磨损度: ${zone.avgWearLevel.toFixed(1)})`,
+          value: zone.avgWearLevel,
+          threshold: WARNING_WEAR_LEVEL,
+        });
+      }
+    }
+
+    updateYarnSimulationStats({
+      totalRuntime: newRuntime,
+      totalRotations: newRotations,
+      deliveryHistory: stats.deliveryHistory,
+      stretchHistory: stats.stretchHistory,
+      wearAccumulation: newWearAccumulation,
+      lastFrame: frame,
+      analysisResult: analysis,
     });
   }
 

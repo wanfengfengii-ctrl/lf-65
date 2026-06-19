@@ -28,6 +28,9 @@ import {
   Layers,
   Gauge,
   X,
+  MapPin,
+  Ruler,
+  Compass,
 } from 'lucide-react';
 import { useSchemeComparison, useCylinderStore } from '@/store/cylinderStore';
 import { HIGH_RISK_THRESHOLD } from '@/types/cylinder';
@@ -128,6 +131,22 @@ export default function ComparisonPanel() {
       diff: diff.rotationSpeed,
       isBetterPositive: true,
       unit: '转/秒',
+    },
+    {
+      name: '送纱嘴数',
+      current: current.feederCount,
+      compare: compare.feederCount,
+      diff: diff.feederCount,
+      isBetterPositive: true,
+      unit: '个',
+    },
+    {
+      name: '平均摩擦',
+      current: current.avgFriction.toFixed(2),
+      compare: compare.avgFriction.toFixed(2),
+      diff: diff.avgFriction,
+      isBetterPositive: false,
+      unit: 'μ',
     },
   ];
 
