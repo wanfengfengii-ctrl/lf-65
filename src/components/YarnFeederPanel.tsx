@@ -15,6 +15,8 @@ import {
   ScrollArea,
   Collapse,
   ColorInput,
+  Select,
+  SimpleGrid,
 } from '@mantine/core';
 import {
   Layers,
@@ -31,6 +33,9 @@ import {
   ChevronDown,
   ChevronUp,
   Sparkles,
+  Crosshair,
+  Users,
+  Link2,
 } from 'lucide-react';
 import { useState } from 'react';
 import { useCylinderStore } from '@/store/cylinderStore';
@@ -60,6 +65,14 @@ export default function YarnFeederPanel() {
     yarnSimulationEnabled,
     toggleYarnSimulation,
     resetYarnSimulation,
+    yarnMaterials,
+    showInterferenceHighlight,
+    toggleShowInterferenceHighlight,
+    showCrowdingHighlight,
+    toggleShowCrowdingHighlight,
+    showTensionCoupling,
+    toggleShowTensionCoupling,
+    runMultiYarnSimulation,
   } = useCylinderStore();
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -158,6 +171,81 @@ export default function YarnFeederPanel() {
             </Group>
           </Paper>
         </Group>
+
+        <SimpleGrid cols={3} spacing="xs">
+          <Paper
+            p="xs"
+            radius="sm"
+            style={{
+              background: showInterferenceHighlight
+                ? 'rgba(255, 107, 107, 0.1)'
+                : 'rgba(10, 22, 40, 0.6)',
+              border: `1px solid ${
+                showInterferenceHighlight ? 'rgba(255, 107, 107, 0.3)' : 'rgba(255,255,255,0.1)'
+              }`,
+              cursor: 'pointer',
+            }}
+            onClick={toggleShowInterferenceHighlight}
+          >
+            <Stack gap={4} align="center">
+              <Crosshair
+                size={14}
+                color={showInterferenceHighlight ? '#ff6b6b' : '#6c7a8c'}
+              />
+              <Text size="xs" fw={500} c={showInterferenceHighlight ? 'red.4' : 'dimmed'} ta="center">
+                干涉
+              </Text>
+            </Stack>
+          </Paper>
+          <Paper
+            p="xs"
+            radius="sm"
+            style={{
+              background: showCrowdingHighlight
+                ? 'rgba(78, 205, 196, 0.1)'
+                : 'rgba(10, 22, 40, 0.6)',
+              border: `1px solid ${
+                showCrowdingHighlight ? 'rgba(78, 205, 196, 0.3)' : 'rgba(255,255,255,0.1)'
+              }`,
+              cursor: 'pointer',
+            }}
+            onClick={toggleShowCrowdingHighlight}
+          >
+            <Stack gap={4} align="center">
+              <Users
+                size={14}
+                color={showCrowdingHighlight ? '#4ecdc4' : '#6c7a8c'}
+              />
+              <Text size="xs" fw={500} c={showCrowdingHighlight ? 'teal.4' : 'dimmed'} ta="center">
+                拥挤
+              </Text>
+            </Stack>
+          </Paper>
+          <Paper
+            p="xs"
+            radius="sm"
+            style={{
+              background: showTensionCoupling
+                ? 'rgba(255, 230, 109, 0.1)'
+                : 'rgba(10, 22, 40, 0.6)',
+              border: `1px solid ${
+                showTensionCoupling ? 'rgba(255, 230, 109, 0.3)' : 'rgba(255,255,255,0.1)'
+              }`,
+              cursor: 'pointer',
+            }}
+            onClick={toggleShowTensionCoupling}
+          >
+            <Stack gap={4} align="center">
+              <Link2
+                size={14}
+                color={showTensionCoupling ? '#ffe66d' : '#6c7a8c'}
+              />
+              <Text size="xs" fw={500} c={showTensionCoupling ? 'yellow.4' : 'dimmed'} ta="center">
+                耦合
+              </Text>
+            </Stack>
+          </Paper>
+        </SimpleGrid>
 
         <Divider c="dark.4" />
 
@@ -446,6 +534,75 @@ export default function YarnFeederPanel() {
                               },
                             }}
                           />
+                        </Stack>
+
+                        <Stack gap="xs">
+                          <Group gap="xs">
+                            <Layers size={12} color="#a29bfe" />
+                            <Text size="xs" fw={500}>
+                              关联材质
+                            </Text>
+                          </Group>
+                          <Select
+                            value={feeder.materialId || null}
+                            onChange={(val) => {
+                              updateYarnFeeder(feeder.id, { materialId: val || undefined });
+                              setTimeout(() => runMultiYarnSimulation(), 50);
+                            }}
+                            placeholder="选择纱线材质..."
+                            data={yarnMaterials.map((m) => ({
+                              value: m.id,
+                              label: m.name,
+                            }))}
+                            size="xs"
+                            allowDeselect
+                            clearable
+                            searchable
+                            styles={{
+                              input: {
+                                background: 'rgba(10, 22, 40, 0.8)',
+                                borderColor: 'rgba(162, 155, 254, 0.3)',
+                                color: '#fff',
+                                fontSize: 11,
+                                height: 28,
+                              },
+                              dropdown: {
+                                background: '#1a2942',
+                                border: '1px solid rgba(162, 155, 254, 0.3)',
+                              },
+                              option: {
+                                color: '#fff',
+                                fontSize: 11,
+                              },
+                            }}
+                          />
+                          {feeder.materialId && (() => {
+                            const mat = yarnMaterials.find((m) => m.id === feeder.materialId);
+                            if (!mat) return null;
+                            return (
+                              <Group gap="xs" wrap="nowrap" mt={2}>
+                                <div
+                                  style={{
+                                    width: 12,
+                                    height: 12,
+                                    borderRadius: 3,
+                                    background: mat.colorMapping,
+                                    flexShrink: 0,
+                                    border: '1px solid rgba(255,255,255,0.2)',
+                                  }}
+                                />
+                                <Badge size="xs" variant="outline" color="pink">
+                                  弹{mat.elasticity}
+                                </Badge>
+                                <Badge size="xs" variant="outline" color="green">
+                                  磨{mat.wearResistance}
+                                </Badge>
+                                <Badge size="xs" variant="outline" color="cyan">
+                                  强{mat.tensileStrength}
+                                </Badge>
+                              </Group>
+                            );
+                          })()}
                         </Stack>
                       </Stack>
                     </Collapse>

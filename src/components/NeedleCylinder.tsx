@@ -42,6 +42,9 @@ export default function NeedleCylinder() {
   const yarnPathLayerRef = useRef<PIXI.Container | null>(null);
   const feederMarkerLayerRef = useRef<PIXI.Container | null>(null);
   const riskHighlightLayerRef = useRef<PIXI.Container | null>(null);
+  const interferenceLayerRef = useRef<PIXI.Container | null>(null);
+  const crowdingLayerRef = useRef<PIXI.Container | null>(null);
+  const couplingLayerRef = useRef<PIXI.Container | null>(null);
   const needleSpritesRef = useRef<PIXI.Graphics[]>([]);
   const animationRef = useRef<number>(0);
   const isMounted = useRef(true);
@@ -52,6 +55,7 @@ export default function NeedleCylinder() {
   const [size, setSize] = useState(400);
   const lastRiskUpdateRef = useRef(0);
   const lastYarnUpdateRef = useRef(0);
+  const lastMultiYarnUpdateRef = useRef(0);
 
   const {
     needles,
@@ -73,6 +77,10 @@ export default function NeedleCylinder() {
     baseTension,
     totalNeedles,
     addYarnBreakWarning,
+    showInterferenceHighlight,
+    showCrowdingHighlight,
+    showTensionCoupling,
+    runMultiYarnSimulation,
   } = useCylinderStore();
 
   const heatMapData = useHeatMapData();
@@ -158,6 +166,24 @@ export default function NeedleCylinder() {
     stage.addChild(riskHighlightLayer);
     riskHighlightLayerRef.current = riskHighlightLayer;
 
+    const interferenceLayer = new PIXI.Container();
+    interferenceLayer.x = centerX;
+    interferenceLayer.y = centerY;
+    stage.addChild(interferenceLayer);
+    interferenceLayerRef.current = interferenceLayer;
+
+    const crowdingLayer = new PIXI.Container();
+    crowdingLayer.x = centerX;
+    crowdingLayer.y = centerY;
+    stage.addChild(crowdingLayer);
+    crowdingLayerRef.current = crowdingLayer;
+
+    const couplingLayer = new PIXI.Container();
+    couplingLayer.x = centerX;
+    couplingLayer.y = centerY;
+    stage.addChild(couplingLayer);
+    couplingLayerRef.current = couplingLayer;
+
     const baseCircle = new PIXI.Graphics();
     baseCircle.beginFill(COLORS.cylinderBase);
     baseCircle.drawCircle(0, 0, Math.min(width, height) / 2 - 40);
@@ -220,6 +246,13 @@ export default function NeedleCylinder() {
         if (showRiskHighlight) {
           updateRiskHighlights();
         }
+        if (showInterferenceHighlight || showCrowdingHighlight || showTensionCoupling) {
+          if (currentTime - lastMultiYarnUpdateRef.current > 200) {
+            lastMultiYarnUpdateRef.current = currentTime;
+            runMultiYarnSimulation();
+          }
+          updateMultiYarnVisualization();
+        }
         if (continuousSimulation && isRunningRef.current) {
           updateYarnSimulationFromRunning(deltaTime);
         }
@@ -270,6 +303,15 @@ export default function NeedleCylinder() {
       if (riskHighlightLayerRef.current) {
         riskHighlightLayerRef.current.removeChildren();
       }
+      if (interferenceLayerRef.current) {
+        interferenceLayerRef.current.removeChildren();
+      }
+      if (crowdingLayerRef.current) {
+        crowdingLayerRef.current.removeChildren();
+      }
+      if (couplingLayerRef.current) {
+        couplingLayerRef.current.removeChildren();
+      }
       return;
     }
     updateYarnPathVisualization();
@@ -277,7 +319,8 @@ export default function NeedleCylinder() {
     if (showRiskHighlight) {
       updateRiskHighlights();
     }
-  }, [yarnFeeders, showYarnPath, showRiskHighlight, yarnSimulationEnabled, size, totalNeedles]);
+    updateMultiYarnVisualization();
+  }, [yarnFeeders, showYarnPath, showRiskHighlight, yarnSimulationEnabled, size, totalNeedles, showInterferenceHighlight, showCrowdingHighlight, showTensionCoupling]);
 
   function updateYarnPathVisualization() {
     if (!yarnPathLayerRef.current) return;
@@ -467,6 +510,192 @@ export default function NeedleCylinder() {
           arc.arc(x, y, ringSize + 4, startAngle, endAngle);
           riskHighlightLayerRef.current.addChild(arc);
         }
+      }
+    }
+  }
+
+  function updateMultiYarnVisualization() {
+    if (interferenceLayerRef.current) {
+      interferenceLayerRef.current.removeChildren();
+    }
+    if (crowdingLayerRef.current) {
+      crowdingLayerRef.current.removeChildren();
+    }
+    if (couplingLayerRef.current) {
+      couplingLayerRef.current.removeChildren();
+    }
+
+    if (!yarnSimulationEnabled) return;
+
+    const state = useCylinderStore.getState();
+    const multiYarnResult = state.yarnSimulationStats?.multiYarnResult;
+    if (!multiYarnResult) return;
+
+    const radius = Math.min(size, size) / 2 - 60;
+    const rotation = cylinderGroupRef.current?.rotation || 0;
+    const needleSize = Math.max(4, Math.min(10, size / 48));
+
+    if (showInterferenceHighlight && interferenceLayerRef.current) {
+      for (const interference of multiYarnResult.interferences) {
+        const fA = yarnFeeders.find(f => f.id === interference.feederA);
+        const fB = yarnFeeders.find(f => f.id === interference.feederB);
+        if (!fA || !fB) continue;
+
+        const colorA = hexToNum(fA.color);
+        const colorB = hexToNum(fB.color);
+
+        for (const needleId of interference.needleIds.slice(0, 20)) {
+          const needleAngle = (needleId / totalNeedles) * Math.PI * 2 + rotation;
+          const x = Math.cos(needleAngle) * radius;
+          const y = Math.sin(needleAngle) * radius;
+
+          const graphic = new PIXI.Graphics();
+          const severity = interference.interferenceLevel;
+          const sizeFactor = severity === 'high' ? 3 : severity === 'medium' ? 2 : 1.2;
+          const pulse = Math.sin(Date.now() / 200 + needleId) * 0.3 + 0.7;
+          const baseColor = severity === 'high' ? 0xff0000 : severity === 'medium' ? 0xff6b35 : 0xffd700;
+
+          graphic.lineStyle(2, baseColor, pulse);
+          graphic.drawCircle(x, y, needleSize + 10 * sizeFactor);
+
+          graphic.lineStyle(1, colorA, 0.5);
+          graphic.moveTo(x, y);
+          const angleA = (fA.position / totalNeedles) * Math.PI * 2 + rotation;
+          graphic.lineTo(
+            x + Math.cos(angleA) * (needleSize + 20 * sizeFactor),
+            y + Math.sin(angleA) * (needleSize + 20 * sizeFactor)
+          );
+
+          graphic.lineStyle(1, colorB, 0.5);
+          graphic.moveTo(x, y);
+          const angleB = (fB.position / totalNeedles) * Math.PI * 2 + rotation;
+          graphic.lineTo(
+            x + Math.cos(angleB) * (needleSize + 20 * sizeFactor),
+            y + Math.sin(angleB) * (needleSize + 20 * sizeFactor)
+          );
+
+          interferenceLayerRef.current.addChild(graphic);
+        }
+
+        if (interference.interferenceLevel !== 'low') {
+          const fAAngle = (fA.position / totalNeedles) * Math.PI * 2 + rotation;
+          const fBAngle = (fB.position / totalNeedles) * Math.PI * 2 + rotation;
+          const fAX = Math.cos(fAAngle) * (radius + 55);
+          const fAY = Math.sin(fAAngle) * (radius + 55);
+          const fBX = Math.cos(fBAngle) * (radius + 55);
+          const fBY = Math.sin(fBAngle) * (radius + 55);
+
+          const line = new PIXI.Graphics();
+          const dash = 6;
+          const gap = 4;
+          const totalDist = Math.sqrt((fBX - fAX) ** 2 + (fBY - fAY) ** 2);
+          const steps = Math.floor(totalDist / (dash + gap));
+          line.lineStyle(2, interference.interferenceLevel === 'high' ? 0xff0000 : 0xff6b35, 0.6);
+          for (let i = 0; i < steps; i++) {
+            const t1 = (i * (dash + gap)) / totalDist;
+            const t2 = Math.min(1, ((i * (dash + gap)) + dash) / totalDist);
+            if (i === 0) {
+              line.moveTo(fAX + (fBX - fAX) * t1, fAY + (fBY - fAY) * t1);
+            }
+            line.lineTo(fAX + (fBX - fAX) * t2, fAY + (fBY - fAY) * t2);
+          }
+          interferenceLayerRef.current.addChild(line);
+        }
+      }
+    }
+
+    if (showCrowdingHighlight && crowdingLayerRef.current) {
+      for (const crowd of multiYarnResult.crowdingZones) {
+        const needleAngle = (crowd.needleId / totalNeedles) * Math.PI * 2 + rotation;
+        const x = Math.cos(needleAngle) * radius;
+        const y = Math.sin(needleAngle) * radius;
+
+        const graphic = new PIXI.Graphics();
+        const severity = crowd.severity;
+        const color = severity === 'high' ? 0xff0000 : severity === 'medium' ? 0x4ecdc4 : 0xa8e6cf;
+        const ringSize = needleSize + 16 + (crowd.feederCount - 2) * 4;
+
+        graphic.beginFill(color, 0.15 + Math.sin(Date.now() / 300) * 0.1);
+        graphic.drawCircle(x, y, ringSize);
+        graphic.endFill();
+
+        for (let i = 0; i < crowd.feederCount; i++) {
+          const offsetAngle = (i / crowd.feederCount) * Math.PI * 2;
+          const ox = x + Math.cos(offsetAngle) * (ringSize - 4);
+          const oy = y + Math.sin(offsetAngle) * (ringSize - 4);
+          graphic.beginFill(color, 0.8);
+          graphic.drawCircle(ox, oy, 3);
+          graphic.endFill();
+        }
+
+        crowdingLayerRef.current.addChild(graphic);
+
+        const countLabel = new PIXI.Graphics();
+        countLabel.beginFill(0x0a1628, 0.9);
+        countLabel.drawRoundedRect(x - 8, y - 6, 16, 12, 3);
+        countLabel.endFill();
+        crowdingLayerRef.current.addChild(countLabel);
+      }
+    }
+
+    if (showTensionCoupling && couplingLayerRef.current) {
+      const visibleCouplings = multiYarnResult.tensionCouplings
+        .filter(c => c.couplingCoefficient > 0.2)
+        .slice(0, 6);
+
+      for (const coupling of visibleCouplings) {
+        const fA = yarnFeeders.find(f => f.id === coupling.feederId);
+        const fB = yarnFeeders.find(f => f.id === coupling.affectedFeederId);
+        if (!fA || !fB) continue;
+
+        const fAAngle = (fA.position / totalNeedles) * Math.PI * 2 + rotation;
+        const fBAngle = (fB.position / totalNeedles) * Math.PI * 2 + rotation;
+        const fAX = Math.cos(fAAngle) * (radius + 30);
+        const fAY = Math.sin(fAAngle) * (radius + 30);
+        const fBX = Math.cos(fBAngle) * (radius + 30);
+        const fBY = Math.sin(fBAngle) * (radius + 30);
+
+        const curve = new PIXI.Graphics();
+        const alpha = Math.min(1, coupling.couplingCoefficient * 2);
+        const lineWidth = 1 + coupling.couplingCoefficient * 3;
+        const color = coupling.couplingCoefficient > 0.5 ? 0xff4757 : 0xffe66d;
+
+        const midX = (fAX + fBX) / 2;
+        const midY = (fAY + fBY) / 2;
+        const dx = fBX - fAX;
+        const dy = fBY - fAY;
+        const perpX = -dy;
+        const perpY = dx;
+        const perpLen = Math.sqrt(perpX * perpX + perpY * perpY);
+        const curveOffset = perpLen > 0 ? (radius * 0.15) / perpLen : 0;
+        const ctrlX = midX + perpX * curveOffset;
+        const ctrlY = midY + perpY * curveOffset;
+
+        curve.lineStyle(lineWidth, color, alpha * (0.5 + Math.sin(Date.now() / 250) * 0.3));
+        curve.moveTo(fAX, fAY);
+        curve.quadraticCurveTo(ctrlX, ctrlY, fBX, fBY);
+
+        couplingLayerRef.current.addChild(curve);
+
+        for (const needleId of coupling.affectedNeedleIds.slice(0, 15)) {
+          const needleAngle = (needleId / totalNeedles) * Math.PI * 2 + rotation;
+          const nx = Math.cos(needleAngle) * radius;
+          const ny = Math.sin(needleAngle) * radius;
+
+          const dot = new PIXI.Graphics();
+          dot.beginFill(color, alpha * 0.6);
+          dot.drawCircle(nx, ny, 2);
+          dot.endFill();
+          couplingLayerRef.current.addChild(dot);
+        }
+
+        const labelPosX = ctrlX;
+        const labelPosY = ctrlY;
+        const labelBg = new PIXI.Graphics();
+        labelBg.beginFill(0x0a1628, 0.85);
+        labelBg.drawRoundedRect(labelPosX - 14, labelPosY - 7, 28, 14, 3);
+        labelBg.endFill();
+        couplingLayerRef.current.addChild(labelBg);
       }
     }
   }

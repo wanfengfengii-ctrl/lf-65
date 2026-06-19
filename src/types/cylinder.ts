@@ -11,6 +11,82 @@ export interface NeedleRiskStats {
   currentRisk: number;
 }
 
+export interface YarnMaterial {
+  id: string;
+  name: string;
+  elasticity: number;
+  thickness: number;
+  wearResistance: number;
+  colorMapping: string;
+  tensileStrength: number;
+  breakingElongation: number;
+  density: number;
+}
+
+export interface PathInterference {
+  feederA: string;
+  feederB: string;
+  needleIds: number[];
+  interferenceLevel: 'low' | 'medium' | 'high';
+  minDistance: number;
+  crossAngle: number;
+}
+
+export interface TensionCoupling {
+  feederId: string;
+  affectedFeederId: string;
+  couplingCoefficient: number;
+  tensionTransferPercent: number;
+  affectedNeedleIds: number[];
+}
+
+export interface LocalCrowding {
+  needleId: number;
+  feederCount: number;
+  crowdingIndex: number;
+  feederIds: string[];
+  severity: 'low' | 'medium' | 'high';
+}
+
+export interface QualityPrediction {
+  uniformityScore: number;
+  breakageProbability: number;
+  wearLifetime: number;
+  patternFidelityScore: number;
+  overallQualityScore: number;
+  grade: 'A' | 'B' | 'C' | 'D';
+  details: {
+    uniformity: {
+      tensionVariance: number;
+      densityVariation: number;
+      needleCoverageRate: number;
+    };
+    breakage: {
+      maxTensionRatio: number;
+      weakPointCount: number;
+      fatigueFactor: number;
+    };
+    wear: {
+      avgWearRate: number;
+      criticalZoneCount: number;
+      predictedCycles: number;
+    };
+    pattern: {
+      alignmentError: number;
+      colorShiftIndex: number;
+      periodAccuracy: number;
+    };
+  };
+}
+
+export interface MultiYarnSimulationResult {
+  interferences: PathInterference[];
+  tensionCouplings: TensionCoupling[];
+  crowdingZones: LocalCrowding[];
+  qualityPrediction: QualityPrediction;
+  synchronizedTensionMap: number[][];
+}
+
 export interface YarnFeederConfig {
   id: string;
   name: string;
@@ -20,6 +96,9 @@ export interface YarnFeederConfig {
   frictionCoefficient: number;
   color: string;
   enabled: boolean;
+  materialId?: string;
+  deliveryRate?: number;
+  tensionOffset?: number;
 }
 
 export interface YarnPathPoint {
@@ -135,6 +214,7 @@ export interface YarnSimulationStats {
   breakWarnings: YarnBreakWarning[];
   lastFrame: YarnSimulationFrame | null;
   analysisResult: YarnAnalysisResult | null;
+  multiYarnResult: MultiYarnSimulationResult | null;
 }
 
 export interface CylinderState {
@@ -158,6 +238,11 @@ export interface CylinderState {
   yarnSimulationStats: YarnSimulationStats | null;
   showYarnPath: boolean;
   showRiskHighlight: boolean;
+  yarnMaterials: YarnMaterial[];
+  showInterferenceHighlight: boolean;
+  showCrowdingHighlight: boolean;
+  showTensionCoupling: boolean;
+  qualityPrediction: QualityPrediction | null;
 }
 
 export interface CylinderActions {
@@ -201,6 +286,15 @@ export interface CylinderActions {
   clearYarnBreakWarnings: () => void;
   resetYarnSimulation: () => void;
   checkYarnWarnings: () => void;
+  addYarnMaterial: (material: Omit<YarnMaterial, 'id'>) => void;
+  updateYarnMaterial: (id: string, updates: Partial<YarnMaterial>) => void;
+  removeYarnMaterial: (id: string) => void;
+  setYarnMaterials: (materials: YarnMaterial[]) => void;
+  toggleShowInterferenceHighlight: () => void;
+  toggleShowCrowdingHighlight: () => void;
+  toggleShowTensionCoupling: () => void;
+  runMultiYarnSimulation: () => void;
+  predictQuality: () => QualityPrediction | null;
 }
 
 export type CylinderStore = CylinderState & CylinderActions;
@@ -248,3 +342,73 @@ export const YARN_FEEDER_COLORS = [
   '#ffd3b6',
   '#bae1ff',
 ];
+
+export const DEFAULT_YARN_MATERIALS: Omit<YarnMaterial, 'id'>[] = [
+  {
+    name: '标准棉线',
+    elasticity: 35,
+    thickness: 28,
+    wearResistance: 60,
+    colorMapping: '#f5deb3',
+    tensileStrength: 70,
+    breakingElongation: 8,
+    density: 1.54,
+  },
+  {
+    name: '高弹涤纶',
+    elasticity: 85,
+    thickness: 22,
+    wearResistance: 75,
+    colorMapping: '#ffffff',
+    tensileStrength: 85,
+    breakingElongation: 25,
+    density: 1.38,
+  },
+  {
+    name: '耐磨锦纶',
+    elasticity: 65,
+    thickness: 20,
+    wearResistance: 92,
+    colorMapping: '#e8e8e8',
+    tensileStrength: 90,
+    breakingElongation: 18,
+    density: 1.14,
+  },
+  {
+    name: '柔软羊毛',
+    elasticity: 55,
+    thickness: 35,
+    wearResistance: 45,
+    colorMapping: '#d4c4a8',
+    tensileStrength: 55,
+    breakingElongation: 30,
+    density: 1.31,
+  },
+  {
+    name: '高强丝线',
+    elasticity: 25,
+    thickness: 15,
+    wearResistance: 68,
+    colorMapping: '#fffacd',
+    tensileStrength: 95,
+    breakingElongation: 15,
+    density: 1.25,
+  },
+];
+
+export const MIN_ELASTICITY = 5;
+export const MAX_ELASTICITY = 100;
+export const MIN_THICKNESS = 5;
+export const MAX_THICKNESS = 100;
+export const MIN_WEAR_RESISTANCE = 10;
+export const MAX_WEAR_RESISTANCE = 100;
+export const MIN_TENSILE_STRENGTH = 10;
+export const MAX_TENSILE_STRENGTH = 100;
+export const MIN_BREAKING_ELONGATION = 1;
+export const MAX_BREAKING_ELONGATION = 50;
+
+export const INTERFERENCE_THRESHOLD_LOW = 15;
+export const INTERFERENCE_THRESHOLD_MEDIUM = 8;
+export const CROWDING_THRESHOLD_LOW = 2;
+export const CROWDING_THRESHOLD_MEDIUM = 3;
+export const COUPLING_THRESHOLD = 0.15;

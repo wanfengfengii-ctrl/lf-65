@@ -41,6 +41,18 @@ import {
   CRITICAL_BREAK_RISK,
   MAX_YARN_FEEDERS,
   YARN_FEEDER_COLORS,
+  YarnMaterial,
+  PathInterference,
+  TensionCoupling,
+  LocalCrowding,
+  QualityPrediction,
+  MultiYarnSimulationResult,
+  DEFAULT_YARN_MATERIALS,
+  INTERFERENCE_THRESHOLD_LOW,
+  INTERFERENCE_THRESHOLD_MEDIUM,
+  CROWDING_THRESHOLD_LOW,
+  CROWDING_THRESHOLD_MEDIUM,
+  COUPLING_THRESHOLD,
 } from '@/types/cylinder';
 
 function generateId(): string {
@@ -72,6 +84,13 @@ function createDefaultFeeders(): YarnFeederConfig[] {
       enabled: true,
     },
   ];
+}
+
+function createDefaultMaterials(): YarnMaterial[] {
+  return DEFAULT_YARN_MATERIALS.map(m => ({
+    ...m,
+    id: generateId(),
+  }));
 }
 
 function createDefaultScheme(): PatternScheme {
@@ -375,6 +394,370 @@ function analyzeYarnStability(
   };
 }
 
+function detectPathInterferences(
+  feeders: YarnFeederConfig[],
+  needles: Needle[],
+  totalNeedles: number,
+  rotation: number,
+  baseTension: number,
+  radius: number = 200
+): PathInterference[] {
+  const interferences: PathInterference[] = [];
+  const enabledFeeders = feeders.filter(f => f.enabled);
+
+  for (let i = 0; i < enabledFeeders.length; i++) {
+    for (let j = i + 1; j < enabledFeeders.length; j++) {
+      const feederA = enabledFeeders[i];
+      const feederB = enabledFeeders[j];
+      const pathA = calculateYarnPath(feederA, needles, totalNeedles, rotation, baseTension, radius);
+      const pathB = calculateYarnPath(feederB, needles, totalNeedles, rotation, baseTension, radius);
+
+      const interferenceNeedles: number[] = [];
+      let minDistance = Infinity;
+      let maxCrossAngle = 0;
+
+      const pointsA = pathA.map(s => ({ x: s.to.x, y: s.to.y, needleId: s.to.needleId }));
+      const pointsB = pathB.map(s => ({ x: s.to.x, y: s.to.y, needleId: s.to.needleId }));
+
+      for (const pa of pointsA) {
+        for (const pb of pointsB) {
+          if (pa.needleId < 0 || pb.needleId < 0) continue;
+          const dist = Math.sqrt((pa.x - pb.x) ** 2 + (pa.y - pb.y) ** 2);
+          if (dist < minDistance) minDistance = dist;
+          if (dist < INTERFERENCE_THRESHOLD_LOW) {
+            if (!interferenceNeedles.includes(pa.needleId)) interferenceNeedles.push(pa.needleId);
+            if (!interferenceNeedles.includes(pb.needleId)) interferenceNeedles.push(pb.needleId);
+            const angleA = Math.atan2(pa.y, pa.x);
+            const angleB = Math.atan2(pb.y, pb.x);
+            const crossAngle = Math.abs(Math.abs(angleA - angleB) - Math.PI / 2);
+            if (crossAngle > maxCrossAngle) maxCrossAngle = crossAngle;
+          }
+        }
+      }
+
+      if (interferenceNeedles.length > 0) {
+        let level: 'low' | 'medium' | 'high' = 'low';
+        if (minDistance < INTERFERENCE_THRESHOLD_MEDIUM || interferenceNeedles.length > totalNeedles * 0.1) {
+          level = 'high';
+        } else if (interferenceNeedles.length > totalNeedles * 0.05) {
+          level = 'medium';
+        }
+        interferences.push({
+          feederA: feederA.id,
+          feederB: feederB.id,
+          needleIds: interferenceNeedles.sort((a, b) => a - b),
+          interferenceLevel: level,
+          minDistance,
+          crossAngle: (maxCrossAngle * 180) / Math.PI,
+        });
+      }
+    }
+  }
+
+  return interferences.sort((a, b) => {
+    const levelOrder = { high: 0, medium: 1, low: 2 };
+    return levelOrder[a.interferenceLevel] - levelOrder[b.interferenceLevel];
+  });
+}
+
+function calculateTensionCouplings(
+  feeders: YarnFeederConfig[],
+  needles: Needle[],
+  totalNeedles: number,
+  baseTension: number
+): TensionCoupling[] {
+  const couplings: TensionCoupling[] = [];
+  const enabledFeeders = feeders.filter(f => f.enabled);
+
+  for (let i = 0; i < enabledFeeders.length; i++) {
+    for (let j = 0; j < enabledFeeders.length; j++) {
+      if (i === j) continue;
+      const feederA = enabledFeeders[i];
+      const feederB = enabledFeeders[j];
+
+      const posDiff = Math.abs(feederA.position - feederB.position);
+      const normalizedPosDiff = Math.min(posDiff, totalNeedles - posDiff) / totalNeedles;
+      const proximityFactor = 1 - normalizedPosDiff;
+
+      const avgFriction = (feederA.frictionCoefficient + feederB.frictionCoefficient) / 2;
+      const angleDiff = Math.abs(feederA.guideAngle - feederB.guideAngle) / 90;
+
+      const couplingCoefficient = proximityFactor * 0.6 + avgFriction * 0.25 + (1 - angleDiff) * 0.15;
+
+      if (couplingCoefficient > COUPLING_THRESHOLD) {
+        const affectedNeedles: number[] = [];
+        const startPos = Math.floor(Math.min(feederA.position, feederB.position));
+        const endPos = Math.ceil(Math.max(feederA.position, feederB.position));
+
+        for (let n = startPos; n <= endPos; n++) {
+          const idx = ((n % totalNeedles) + totalNeedles) % totalNeedles;
+          if (needles[idx]?.enabled) {
+            affectedNeedles.push(idx);
+          }
+        }
+
+        const tensionTransfer = couplingCoefficient * 100 * (baseTension / 100);
+
+        couplings.push({
+          feederId: feederA.id,
+          affectedFeederId: feederB.id,
+          couplingCoefficient: clamp(couplingCoefficient, 0, 1),
+          tensionTransferPercent: clamp(tensionTransfer, 0, 100),
+          affectedNeedleIds: affectedNeedles,
+        });
+      }
+    }
+  }
+
+  return couplings.sort((a, b) => b.couplingCoefficient - a.couplingCoefficient);
+}
+
+function detectLocalCrowding(
+  feeders: YarnFeederConfig[],
+  needles: Needle[],
+  totalNeedles: number,
+  rotation: number,
+  baseTension: number,
+  radius: number = 200
+): LocalCrowding[] {
+  const crowdingZones: LocalCrowding[] = [];
+  const enabledFeeders = feeders.filter(f => f.enabled);
+  const needleFeederMap: Map<number, string[]> = new Map();
+
+  for (const feeder of enabledFeeders) {
+    const path = calculateYarnPath(feeder, needles, totalNeedles, rotation, baseTension, radius);
+    for (const seg of path) {
+      if (seg.to.needleId >= 0) {
+        if (!needleFeederMap.has(seg.to.needleId)) {
+          needleFeederMap.set(seg.to.needleId, []);
+        }
+        const list = needleFeederMap.get(seg.to.needleId)!;
+        if (!list.includes(feeder.id)) {
+          list.push(feeder.id);
+        }
+      }
+    }
+  }
+
+  for (const [needleIdStr, feederIds] of needleFeederMap.entries()) {
+    const needleId = Number(needleIdStr);
+    const count = feederIds.length;
+
+    if (count >= CROWDING_THRESHOLD_LOW) {
+      let severity: 'low' | 'medium' | 'high' = 'low';
+      if (count >= CROWDING_THRESHOLD_MEDIUM + 1) {
+        severity = 'high';
+      } else if (count >= CROWDING_THRESHOLD_MEDIUM) {
+        severity = 'medium';
+      }
+
+      const baseIndex = count / enabledFeeders.length;
+      const materialPenalty = feederIds.some((fid) => {
+        const f = feeders.find(ff => ff.id === fid);
+        return f && (f.materialId ? true : false);
+      }) ? 1.2 : 1;
+
+      crowdingZones.push({
+        needleId,
+        feederCount: count,
+        crowdingIndex: clamp(baseIndex * materialPenalty * 100, 0, 100),
+        feederIds,
+        severity,
+      });
+    }
+  }
+
+  return crowdingZones.sort((a, b) => b.crowdingIndex - a.crowdingIndex);
+}
+
+function calculateQualityPrediction(
+  yarnAnalysis: YarnAnalysisResult | null,
+  interferences: PathInterference[],
+  couplings: TensionCoupling[],
+  crowding: LocalCrowding[],
+  feeders: YarnFeederConfig[],
+  needles: Needle[],
+  patternPeriod: number,
+  totalNeedles: number,
+  materials: YarnMaterial[]
+): QualityPrediction {
+  const enabledFeeders = feeders.filter(f => f.enabled);
+  const enabledNeedles = needles.filter(n => n.enabled);
+
+  const tensions = enabledNeedles.map(n => n.tension);
+  const avgTension = tensions.length > 0 ? tensions.reduce((a, b) => a + b, 0) / tensions.length : 0;
+  const tensionVariance = tensions.length > 0
+    ? Math.sqrt(tensions.reduce((s, t) => s + (t - avgTension) ** 2, 0) / tensions.length)
+    : 0;
+
+  const interferencePenalty = interferences.reduce((s, i) => {
+    const factor = i.interferenceLevel === 'high' ? 8 : i.interferenceLevel === 'medium' ? 4 : 1;
+    return s + factor * (i.needleIds.length / totalNeedles);
+  }, 0);
+
+  const couplingPenalty = couplings.reduce((s, c) => s + c.couplingCoefficient * 3, 0);
+  const crowdingPenalty = crowding.reduce((s, c) => {
+    const factor = c.severity === 'high' ? 6 : c.severity === 'medium' ? 3 : 1;
+    return s + factor * (c.crowdingIndex / 100);
+  }, 0);
+
+  let avgWearResistance = 60;
+  let avgElasticity = 50;
+  let avgTensileStrength = 70;
+  const usedMaterials = enabledFeeders
+    .map(f => f.materialId)
+    .filter(id => id)
+    .map(id => materials.find(m => m.id === id))
+    .filter(Boolean) as YarnMaterial[];
+
+  if (usedMaterials.length > 0) {
+    avgWearResistance = usedMaterials.reduce((s, m) => s + m.wearResistance, 0) / usedMaterials.length;
+    avgElasticity = usedMaterials.reduce((s, m) => s + m.elasticity, 0) / usedMaterials.length;
+    avgTensileStrength = usedMaterials.reduce((s, m) => s + m.tensileStrength, 0) / usedMaterials.length;
+  }
+
+  const baseUniformity = 100;
+  const tensionPenalty = (tensionVariance / 20) * 15;
+  const coverageRate = enabledNeedles.length / totalNeedles;
+  const coveragePenalty = (1 - coverageRate) * 30;
+  const densityVariation = Math.abs(patternPeriod - Math.round(totalNeedles / enabledFeeders.length || 1)) / patternPeriod * 10;
+
+  const uniformityScore = clamp(
+    baseUniformity - tensionPenalty - coveragePenalty - densityVariation - interferencePenalty * 2,
+    0, 100
+  );
+
+  const baseBreakageRisk = yarnAnalysis?.breakRiskScore || 50;
+  const strengthBonus = (100 - avgTensileStrength) * 0.5;
+  const elasticityBonus = (100 - avgElasticity) * 0.3;
+
+  const breakageProbability = clamp(
+    baseBreakageRisk + interferencePenalty * 3 + crowdingPenalty * 2 + strengthBonus - elasticityBonus * 0.5,
+    0, 100
+  );
+
+  const baseLifetime = 10000;
+  const wearFactor = (100 - avgWearResistance) / 100;
+  const wearReduction = (yarnAnalysis?.criticalWearZones?.length || 0) * 500;
+  const crowdingReduction = crowdingPenalty * 200;
+  const interferenceReduction = interferencePenalty * 150;
+
+  const wearLifetime = Math.max(
+    500,
+    Math.round(baseLifetime * (1 - wearFactor * 0.7) - wearReduction - crowdingReduction - interferenceReduction)
+  );
+
+  const enabledFeederPenalty = enabledFeeders.length > 4 ? (enabledFeeders.length - 4) * 3 : 0;
+  const periodAccuracy = clamp(100 - Math.abs((patternPeriod || 8) - 8) * 5, 0, 100);
+  const alignmentError = clamp(interferencePenalty * 2 + couplingPenalty * 1.5, 0, 50);
+  const colorShiftIndex = clamp((usedMaterials.length > 1 ? usedMaterials.length * 5 : 0) + interferencePenalty, 0, 30);
+
+  const patternFidelityScore = clamp(
+    100 - alignmentError - colorShiftIndex - enabledFeederPenalty + periodAccuracy * 0.2,
+    0, 100
+  );
+
+  const overallQualityScore = clamp(
+    uniformityScore * 0.3 +
+    (100 - breakageProbability) * 0.25 +
+    clamp((wearLifetime / 10000) * 100, 0, 100) * 0.2 +
+    patternFidelityScore * 0.25,
+    0, 100
+  );
+
+  let grade: 'A' | 'B' | 'C' | 'D' = 'D';
+  if (overallQualityScore >= 85) grade = 'A';
+  else if (overallQualityScore >= 70) grade = 'B';
+  else if (overallQualityScore >= 55) grade = 'C';
+
+  return {
+    uniformityScore,
+    breakageProbability,
+    wearLifetime,
+    patternFidelityScore,
+    overallQualityScore,
+    grade,
+    details: {
+      uniformity: {
+        tensionVariance: Number(tensionVariance.toFixed(2)),
+        densityVariation: Number(densityVariation.toFixed(2)),
+        needleCoverageRate: Number((coverageRate * 100).toFixed(1)),
+      },
+      breakage: {
+        maxTensionRatio: yarnAnalysis ? Number(((yarnAnalysis.maxStretchPeak || 0) / 100).toFixed(3)) : 0,
+        weakPointCount: (yarnAnalysis?.topRiskNeedles?.length || 0) + crowding.filter(c => c.severity === 'high').length,
+        fatigueFactor: Number(clamp(couplingPenalty + crowdingPenalty * 0.5, 0, 10).toFixed(2)),
+      },
+      wear: {
+        avgWearRate: Number(((100 - avgWearResistance) * (1 + crowdingPenalty * 0.02)).toFixed(2)),
+        criticalZoneCount: (yarnAnalysis?.criticalWearZones?.length || 0) + crowding.filter(c => c.severity !== 'low').length,
+        predictedCycles: wearLifetime,
+      },
+      pattern: {
+        alignmentError: Number(alignmentError.toFixed(2)),
+        colorShiftIndex: Number(colorShiftIndex.toFixed(2)),
+        periodAccuracy: Number(periodAccuracy.toFixed(1)),
+      },
+    },
+  };
+}
+
+function runFullMultiYarnSimulation(
+  feeders: YarnFeederConfig[],
+  needles: Needle[],
+  totalNeedles: number,
+  baseTension: number,
+  patternPeriod: number,
+  materials: YarnMaterial[],
+  yarnAnalysis: YarnAnalysisResult | null,
+  lastFrame: YarnSimulationFrame | null
+): MultiYarnSimulationResult {
+  const rotation = lastFrame?.rotation || 0;
+  const radius = 180;
+
+  const interferences = detectPathInterferences(feeders, needles, totalNeedles, rotation, baseTension, radius);
+  const tensionCouplings = calculateTensionCouplings(feeders, needles, totalNeedles, baseTension);
+  const crowdingZones = detectLocalCrowding(feeders, needles, totalNeedles, rotation, baseTension, radius);
+  const qualityPrediction = calculateQualityPrediction(
+    yarnAnalysis,
+    interferences,
+    tensionCouplings,
+    crowdingZones,
+    feeders,
+    needles,
+    patternPeriod,
+    totalNeedles,
+    materials
+  );
+
+  const synchronizedTensionMap: number[][] = [];
+  for (let i = 0; i < totalNeedles; i++) {
+    const row: number[] = [];
+    for (const feeder of feeders) {
+      if (feeder.enabled) {
+        const couplingEffect = tensionCouplings
+          .filter(c => c.affectedFeederId === feeder.id)
+          .reduce((s, c) => s + (c.affectedNeedleIds.includes(i) ? c.tensionTransferPercent * 0.01 : 0), 0);
+        const crowd = crowdingZones.find(c => c.needleId === i);
+        const crowdingEffect = crowd ? (crowd.crowdingIndex / 100) * 15 : 0;
+        const baseValue = needles[i]?.tension || baseTension;
+        row.push(clamp(baseValue + couplingEffect + crowdingEffect, MIN_TENSION, MAX_TENSION));
+      } else {
+        row.push(0);
+      }
+    }
+    synchronizedTensionMap.push(row);
+  }
+
+  return {
+    interferences,
+    tensionCouplings,
+    crowdingZones,
+    qualityPrediction,
+    synchronizedTensionMap,
+  };
+}
+
 export const useCylinderStore = create<CylinderStore>((set, get) => ({
   totalNeedles: defaultScheme.totalNeedles,
   needles: defaultScheme.needles,
@@ -396,6 +779,11 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
   yarnSimulationStats: null,
   showYarnPath: true,
   showRiskHighlight: true,
+  yarnMaterials: createDefaultMaterials(),
+  showInterferenceHighlight: true,
+  showCrowdingHighlight: true,
+  showTensionCoupling: true,
+  qualityPrediction: null,
 
   toggleNeedle: (id: number) => {
     set((state) => ({
@@ -476,6 +864,10 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
       yarnSimulationStats: null,
       showYarnPath: true,
       showRiskHighlight: true,
+      yarnMaterials: createDefaultMaterials(),
+      showInterferenceHighlight: true,
+      showCrowdingHighlight: true,
+      showTensionCoupling: true,
     });
   },
 
@@ -681,6 +1073,7 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
             breakWarnings: [],
             lastFrame: null,
             analysisResult: null,
+            multiYarnResult: null,
           },
         };
       } else {
@@ -995,7 +1388,9 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
         breakWarnings: [],
         lastFrame: null,
         analysisResult: null,
+        multiYarnResult: null,
       },
+      qualityPrediction: null,
     }));
   },
 
@@ -1068,6 +1463,137 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
       }
     }
   },
+
+  addYarnMaterial: (material: Omit<YarnMaterial, 'id'>) => {
+    const newMaterial: YarnMaterial = { ...material, id: generateId() };
+    set((state) => ({ yarnMaterials: [...state.yarnMaterials, newMaterial] }));
+    get().runMultiYarnSimulation();
+  },
+
+  updateYarnMaterial: (id: string, updates: Partial<YarnMaterial>) => {
+    set((state) => ({
+      yarnMaterials: state.yarnMaterials.map((m) =>
+        m.id === id ? { ...m, ...updates } : m
+      ),
+    }));
+    get().runMultiYarnSimulation();
+  },
+
+  removeYarnMaterial: (id: string) => {
+    set((state) => ({
+      yarnMaterials: state.yarnMaterials.filter((m) => m.id !== id),
+      yarnFeeders: state.yarnFeeders.map((f) =>
+        f.materialId === id ? { ...f, materialId: undefined } : f
+      ),
+    }));
+    get().runMultiYarnSimulation();
+  },
+
+  setYarnMaterials: (materials: YarnMaterial[]) => {
+    set({ yarnMaterials: materials });
+    get().runMultiYarnSimulation();
+  },
+
+  toggleShowInterferenceHighlight: () => {
+    set((state) => ({ showInterferenceHighlight: !state.showInterferenceHighlight }));
+  },
+
+  toggleShowCrowdingHighlight: () => {
+    set((state) => ({ showCrowdingHighlight: !state.showCrowdingHighlight }));
+  },
+
+  toggleShowTensionCoupling: () => {
+    set((state) => ({ showTensionCoupling: !state.showTensionCoupling }));
+  },
+
+  runMultiYarnSimulation: () => {
+    const state = get();
+    const { yarnFeeders, needles, totalNeedles, baseTension, patternPeriod, yarnMaterials, yarnSimulationStats } = state;
+
+    if (yarnFeeders.filter(f => f.enabled).length === 0) {
+      set((s) => ({
+        yarnSimulationStats: s.yarnSimulationStats
+          ? { ...s.yarnSimulationStats, multiYarnResult: null }
+          : null,
+      }));
+      return;
+    }
+
+    const result = runFullMultiYarnSimulation(
+      yarnFeeders,
+      needles,
+      totalNeedles,
+      baseTension,
+      patternPeriod,
+      yarnMaterials,
+      yarnSimulationStats?.analysisResult || null,
+      yarnSimulationStats?.lastFrame || null
+    );
+
+    const highInterference = result.interferences.filter(i => i.interferenceLevel !== 'low');
+    for (const interference of highInterference) {
+      const fA = yarnFeeders.find(f => f.id === interference.feederA);
+      const fB = yarnFeeders.find(f => f.id === interference.feederB);
+      get().addWarning({
+        type: 'high_risk',
+        level: interference.interferenceLevel === 'high' ? 'error' : 'warning',
+        message: `路径干涉: ${fA?.name || '送纱嘴A'} ↔ ${fB?.name || '送纱嘴B'}`,
+        details: `在 ${interference.needleIds.length} 个针位检测到干涉，最小距离 ${interference.minDistance.toFixed(1)}px，交叉角度 ${interference.crossAngle.toFixed(0)}°`,
+      });
+    }
+
+    const highCrowding = result.crowdingZones.filter(c => c.severity !== 'low');
+    for (const crowd of highCrowding) {
+      get().addWarning({
+        type: 'high_risk',
+        level: crowd.severity === 'high' ? 'error' : 'warning',
+        message: `局部拥挤: 针位 #${crowd.needleId + 1} (${crowd.feederCount}条纱线)`,
+        details: `拥挤指数 ${crowd.crowdingIndex.toFixed(1)}，建议调整送纱嘴位置或角度`,
+      });
+    }
+
+    const highCoupling = result.tensionCouplings.filter(c => c.couplingCoefficient > 0.3).slice(0, 5);
+    for (const coupling of highCoupling) {
+      const fA = yarnFeeders.find(f => f.id === coupling.feederId);
+      const fB = yarnFeeders.find(f => f.id === coupling.affectedFeederId);
+      get().addWarning({
+        type: 'tension',
+        level: coupling.couplingCoefficient > 0.5 ? 'warning' : 'info',
+        message: `张力耦合: ${fA?.name || 'A'} → ${fB?.name || 'B'}`,
+        details: `耦合系数 ${coupling.couplingCoefficient.toFixed(2)}，张力传递 ${coupling.tensionTransferPercent.toFixed(1)}%`,
+      });
+    }
+
+    set((s) => ({
+      yarnSimulationStats: s.yarnSimulationStats
+        ? { ...s.yarnSimulationStats, multiYarnResult: result }
+        : null,
+    }));
+  },
+
+  predictQuality: () => {
+    const state = get();
+    const { yarnFeeders, needles, totalNeedles, baseTension, patternPeriod, yarnMaterials, yarnSimulationStats } = state;
+
+    if (yarnFeeders.filter(f => f.enabled).length === 0) {
+      set({ qualityPrediction: null });
+      return null;
+    }
+
+    const result = runFullMultiYarnSimulation(
+      yarnFeeders,
+      needles,
+      totalNeedles,
+      baseTension,
+      patternPeriod,
+      yarnMaterials,
+      yarnSimulationStats?.analysisResult || null,
+      yarnSimulationStats?.lastFrame || null
+    );
+
+    set({ qualityPrediction: result.qualityPrediction });
+    return result.qualityPrediction;
+  },
 }));
 
 export function useCylinderStats() {
@@ -1099,7 +1625,7 @@ export function useCylinderStats() {
 }
 
 export function useSchemeComparison() {
-  const { schemes, currentSchemeId, compareSchemeId } = useCylinderStore();
+  const { schemes, currentSchemeId, compareSchemeId, yarnMaterials } = useCylinderStore();
 
   const currentScheme = schemes.find((s) => s.id === currentSchemeId);
   const compareScheme = schemes.find((s) => s.id === compareSchemeId);
@@ -1146,6 +1672,24 @@ export function useSchemeComparison() {
     ? compareScheme.yarnFeeders.reduce((sum, f) => sum + f.frictionCoefficient, 0) / compareScheme.yarnFeeders.length
     : 0;
 
+  const currentQuality = calculateQualityPrediction(
+    null, [], [], [],
+    currentScheme.yarnFeeders || [],
+    currentScheme.needles,
+    currentScheme.patternPeriod,
+    currentScheme.totalNeedles,
+    yarnMaterials
+  );
+
+  const compareQuality = calculateQualityPrediction(
+    null, [], [], [],
+    compareScheme.yarnFeeders || [],
+    compareScheme.needles,
+    compareScheme.patternPeriod,
+    compareScheme.totalNeedles,
+    yarnMaterials
+  );
+
   return {
     current: {
       scheme: currentScheme,
@@ -1157,6 +1701,7 @@ export function useSchemeComparison() {
       rotationSpeed: currentScheme.rotationSpeed,
       feederCount: currentFeederCount,
       avgFriction: currentAvgFriction,
+      quality: currentQuality,
     },
     compare: {
       scheme: compareScheme,
@@ -1168,6 +1713,7 @@ export function useSchemeComparison() {
       rotationSpeed: compareScheme.rotationSpeed,
       feederCount: compareFeederCount,
       avgFriction: compareAvgFriction,
+      quality: compareQuality,
     },
     diff: {
       enabledCount: currentEnabled - compareEnabled,
@@ -1177,6 +1723,13 @@ export function useSchemeComparison() {
       rotationSpeed: currentScheme.rotationSpeed - compareScheme.rotationSpeed,
       feederCount: currentFeederCount - compareFeederCount,
       avgFriction: currentAvgFriction - compareAvgFriction,
+      quality: {
+        overall: currentQuality.overallQualityScore - compareQuality.overallQualityScore,
+        uniformity: currentQuality.uniformityScore - compareQuality.uniformityScore,
+        breakage: currentQuality.breakageProbability - compareQuality.breakageProbability,
+        wear: currentQuality.wearLifetime - compareQuality.wearLifetime,
+        pattern: currentQuality.patternFidelityScore - compareQuality.patternFidelityScore,
+      },
     },
   };
 }

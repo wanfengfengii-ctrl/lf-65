@@ -1,5 +1,5 @@
-import { Container, Grid, Title, Text, Group, Paper, Tabs } from '@mantine/core';
-import { Cpu, Info, BarChart3, ArrowRightLeft, Layers, Activity, AlertTriangle, Flame } from 'lucide-react';
+import { Container, Grid, Title, Text, Group, Paper, Tabs, Badge } from '@mantine/core';
+import { Cpu, Info, BarChart3, ArrowRightLeft, Layers, Activity, AlertTriangle, Flame, Sparkles, LineChart, Gauge, ShieldCheck } from 'lucide-react';
 import NeedleCylinder from '@/components/NeedleCylinder';
 import ControlPanel from '@/components/ControlPanel';
 import StatsPanel from '@/components/StatsPanel';
@@ -9,6 +9,8 @@ import WarningPanel from '@/components/WarningPanel';
 import SimulationPanel from '@/components/SimulationPanel';
 import YarnFeederPanel from '@/components/YarnFeederPanel';
 import YarnAnalysisPanel from '@/components/YarnAnalysisPanel';
+import YarnMaterialPanel from '@/components/YarnMaterialPanel';
+import QualityPredictionPanel from '@/components/QualityPredictionPanel';
 import { useCylinderStore } from '@/store/cylinderStore';
 import { HIGH_RISK_THRESHOLD, WARNING_STRETCH_THRESHOLD } from '@/types/cylinder';
 import { useEffect } from 'react';
@@ -25,6 +27,13 @@ export default function Home() {
     showRiskHighlight,
     checkYarnWarnings,
     yarnSimulationStats,
+    yarnMaterials,
+    qualityPrediction,
+    showInterferenceHighlight,
+    showCrowdingHighlight,
+    showTensionCoupling,
+    runMultiYarnSimulation,
+    predictQuality,
   } = useCylinderStore();
 
   const currentScheme = schemes.find((s) => s.id === currentSchemeId);
@@ -33,7 +42,7 @@ export default function Home() {
   const warningCount = warnings.filter((w) => w.level === 'warning').length;
   const yarnBreakCount = yarnSimulationStats?.breakWarnings?.length || 0;
   const yarnWarningCount = warnings.filter((w) =>
-    ['break_risk', 'excessive_stretch', 'high_wear', 'delivery_fluctuation', 'angle_violation'].includes(w.type)
+    ['break_risk', 'excessive_stretch', 'high_wear', 'delivery_fluctuation', 'angle_violation', 'path_interference', 'local_crowding', 'tension_conflict'].includes(w.type)
   ).length;
 
   const stabilityScore = yarnSimulationStats?.analysisResult?.overallStability;
@@ -42,9 +51,21 @@ export default function Home() {
   const wearZones = yarnSimulationStats?.analysisResult?.criticalWearZones;
   const avgFluctuation = yarnSimulationStats?.analysisResult?.avgFluctuation;
 
+  const multiYarnResult = yarnSimulationStats?.multiYarnResult;
+  const qualityScore = qualityPrediction?.overallQualityScore;
+  const qualityGrade = qualityPrediction?.grade;
+
   useEffect(() => {
     checkYarnWarnings();
-  }, [checkYarnWarnings]);
+    if (yarnFeeders.some(f => f.enabled)) {
+      const t1 = setTimeout(() => runMultiYarnSimulation(), 100);
+      const t2 = setTimeout(() => predictQuality(), 200);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [checkYarnWarnings, runMultiYarnSimulation, predictQuality, yarnFeeders]);
 
   return (
     <div
@@ -87,11 +108,11 @@ export default function Home() {
               <Cpu size={28} color="#00d4ff" />
               <div>
                 <Title order={2} c="cyan.4">
-                  手摇织袜机针筒模拟器
+                  多纱路协同与成品质量预测系统
                 </Title>
                 <Group gap="sm" mt={4}>
                   <Text size="sm" c="dimmed">
-                    Needle Cylinder Simulator · 纱线路径与送纱稳定性分析 v2.0
+                    Multi-Yarn Coordination & Quality Prediction System v3.0
                   </Text>
                   {currentScheme && (
                     <Text size="xs" c="cyan.4">
@@ -108,6 +129,11 @@ export default function Home() {
                       | 🧵 纱线可见
                     </Text>
                   )}
+                  {qualityScore !== undefined && (
+                    <Badge size="xs" color={qualityGrade === 'A' ? 'green' : qualityGrade === 'B' ? 'cyan' : qualityGrade === 'C' ? 'yellow' : 'red'} variant="filled">
+                      质量 {qualityGrade} · {qualityScore.toFixed(0)}分
+                    </Badge>
+                  )}
                 </Group>
               </div>
             </Group>
@@ -119,6 +145,7 @@ export default function Home() {
             <Stack gap="md">
               <ControlPanel />
               <YarnFeederPanel />
+              <YarnMaterialPanel />
               <SchemeManager />
             </Stack>
           </Grid.Col>
@@ -247,6 +274,25 @@ export default function Home() {
                     </Text>
                   </Group>
                 )}
+                {(showInterferenceHighlight || showCrowdingHighlight || showTensionCoupling) && (
+                  <Group mt={4} wrap="wrap">
+                    {showInterferenceHighlight && multiYarnResult && multiYarnResult.interferences.length > 0 && (
+                      <Badge size="xs" color="red" variant="outline">
+                        ⚡ 干涉 {multiYarnResult.interferences.length}
+                      </Badge>
+                    )}
+                    {showCrowdingHighlight && multiYarnResult && multiYarnResult.crowdingZones.length > 0 && (
+                      <Badge size="xs" color="cyan" variant="outline">
+                        👥 拥挤 {multiYarnResult.crowdingZones.length}
+                      </Badge>
+                    )}
+                    {showTensionCoupling && multiYarnResult && multiYarnResult.tensionCouplings.length > 0 && (
+                      <Badge size="xs" color="yellow" variant="outline">
+                        🔗 耦合 {multiYarnResult.tensionCouplings.filter(c => c.couplingCoefficient > 0.2).length}
+                      </Badge>
+                    )}
+                  </Group>
+                )}
               </Paper>
 
               <Tabs defaultValue="yarn" variant="pills" color="cyan">
@@ -273,6 +319,52 @@ export default function Home() {
                     }
                   >
                     纱线分析
+                  </Tabs.Tab>
+                  <Tabs.Tab
+                    value="quality"
+                    leftSection={<ShieldCheck size={14} />}
+                    rightSection={
+                      qualityScore !== undefined ? (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            background: qualityGrade === 'A' ? '#2ed573' : qualityGrade === 'B' ? '#1e90ff' : qualityGrade === 'C' ? '#ffa502' : '#ff4757',
+                            color: '#fff',
+                            borderRadius: 10,
+                            padding: '0 6px',
+                            fontSize: 10,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {qualityGrade}
+                        </span>
+                      ) : null
+                    }
+                  >
+                    质量预测
+                  </Tabs.Tab>
+                  <Tabs.Tab
+                    value="material"
+                    leftSection={<Sparkles size={14} />}
+                    rightSection={
+                      yarnMaterials.length > 0 ? (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            background: '#a29bfe',
+                            color: '#fff',
+                            borderRadius: 10,
+                            padding: '0 6px',
+                            fontSize: 10,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {yarnMaterials.length}
+                        </span>
+                      ) : null
+                    }
+                  >
+                    材质配置
                   </Tabs.Tab>
                   <Tabs.Tab
                     value="stats"
@@ -321,6 +413,14 @@ export default function Home() {
                   <YarnAnalysisPanel />
                 </Tabs.Panel>
 
+                <Tabs.Panel value="quality" pt="md">
+                  <QualityPredictionPanel />
+                </Tabs.Panel>
+
+                <Tabs.Panel value="material" pt="md">
+                  <YarnMaterialPanel compact />
+                </Tabs.Panel>
+
                 <Tabs.Panel value="stats" pt="md">
                   <StatsPanel />
                 </Tabs.Panel>
@@ -342,6 +442,146 @@ export default function Home() {
 
           <Grid.Col span={{ base: 12, md: 3 }} order={{ base: 3, md: 3 }}>
             <Stack gap="md">
+              <Paper
+                p="md"
+                radius="md"
+                style={{
+                  background: 'rgba(26, 41, 66, 0.9)',
+                  border: `1px solid ${
+                    qualityScore !== undefined && qualityScore < 60
+                      ? 'rgba(255, 71, 87, 0.5)'
+                      : 'rgba(46, 213, 115, 0.4)'
+                  }`,
+                  backdropFilter: 'blur(10px)',
+                }}
+              >
+                <Group justify="space-between" mb="sm">
+                  <Group gap="xs">
+                    <ShieldCheck size={18} color="#2ed573" />
+                    <Title order={5} c="green.4">
+                      🏆 成品质量预测
+                    </Title>
+                  </Group>
+                  {qualityGrade && (
+                    <Badge
+                      size="lg"
+                      color={qualityGrade === 'A' ? 'green' : qualityGrade === 'B' ? 'cyan' : qualityGrade === 'C' ? 'yellow' : 'red'}
+                      variant="filled"
+                    >
+                      等级 {qualityGrade}
+                    </Badge>
+                  )}
+                </Group>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  <Paper
+                    p="xs"
+                    radius="sm"
+                    style={{
+                      background: 'rgba(10, 22, 40, 0.6)',
+                      border: `1px solid ${
+                        qualityScore !== undefined
+                          ? qualityScore >= 80
+                            ? 'rgba(46, 213, 115, 0.4)'
+                            : qualityScore >= 60
+                            ? 'rgba(255, 215, 0, 0.4)'
+                            : 'rgba(255, 71, 87, 0.5)'
+                          : 'rgba(0, 212, 255, 0.2)'
+                      }`,
+                    }}
+                  >
+                    <Text size="xs" c="dimmed">
+                      综合质量分
+                    </Text>
+                    <Text
+                      size="xl"
+                      fw={700}
+                      c={
+                        qualityScore === undefined
+                          ? 'dimmed'
+                          : qualityScore >= 80
+                          ? 'green.4'
+                          : qualityScore >= 60
+                          ? 'yellow.4'
+                          : 'red.4'
+                      }
+                    >
+                      {qualityScore !== undefined
+                        ? `${qualityScore.toFixed(0)}`
+                        : '--'}
+                    </Text>
+                  </Paper>
+
+                  <Paper
+                    p="xs"
+                    radius="sm"
+                    style={{
+                      background: 'rgba(10, 22, 40, 0.6)',
+                      border: '1px solid rgba(255, 107, 53, 0.3)',
+                    }}
+                  >
+                    <Text size="xs" c="dimmed">
+                      磨损寿命(h)
+                    </Text>
+                    <Text size="xl" fw={700} c="orange.4">
+                      {qualityPrediction?.wearLifetime !== undefined
+                        ? `${qualityPrediction.wearLifetime.toFixed(0)}`
+                        : '--'}
+                    </Text>
+                  </Paper>
+
+                  <Paper
+                    p="xs"
+                    radius="sm"
+                    style={{
+                      background: 'rgba(10, 22, 40, 0.6)',
+                      border: '1px solid rgba(0, 212, 255, 0.2)',
+                    }}
+                  >
+                    <Text size="xs" c="dimmed">
+                      均匀度
+                    </Text>
+                    <Text size="xl" fw={700} c="cyan.4">
+                      {qualityPrediction?.uniformityScore !== undefined
+                        ? `${qualityPrediction.uniformityScore.toFixed(0)}%`
+                        : '--'}
+                    </Text>
+                  </Paper>
+
+                  <Paper
+                    p="xs"
+                    radius="sm"
+                    style={{
+                      background: 'rgba(10, 22, 40, 0.6)',
+                      border: '1px solid rgba(162, 155, 254, 0.3)',
+                    }}
+                  >
+                    <Text size="xs" c="dimmed">
+                      花型还原
+                    </Text>
+                    <Text size="xl" fw={700} c="violet.4">
+                      {qualityPrediction?.patternFidelityScore !== undefined
+                        ? `${qualityPrediction.patternFidelityScore.toFixed(0)}%`
+                        : '--'}
+                    </Text>
+                  </Paper>
+                </div>
+
+                {multiYarnResult && (
+                  <Group mt="sm" grow>
+                    <Badge size="sm" color="red" variant="light">
+                      ⚡ 干涉 {multiYarnResult.interferences.filter(i => i.interferenceLevel !== 'low').length}
+                    </Badge>
+                    <Badge size="sm" color="cyan" variant="light">
+                      👥 拥挤 {multiYarnResult.crowdingZones.filter(c => c.severity !== 'low').length}
+                    </Badge>
+                    <Badge size="sm" color="yellow" variant="light">
+                      🔗 耦合 {multiYarnResult.tensionCouplings.filter(c => c.couplingCoefficient > 0.3).length}
+                    </Badge>
+                  </Group>
+                )}
+              </Paper>
+
               <Paper
                 p="md"
                 radius="md"
@@ -500,7 +740,7 @@ export default function Home() {
 
         <Group justify="center" mt="md">
           <Text size="xs" c="dimmed">
-            © 2024 纺织工程可视化教学工具 | 工业科技风格界面 | 织袜工艺预警与方案对比系统 v2.0 · 纱线路径与送纱稳定性分析模块
+            © 2024 纺织工程可视化教学工具 | 工业科技风格界面 | 多纱路协同与成品质量预测系统 v3.0 · 多纱路干涉/耦合/拥挤模拟 · 多维度质量评分与花型还原预测
           </Text>
         </Group>
       </Container>
