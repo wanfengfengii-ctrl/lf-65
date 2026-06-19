@@ -1,12 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as PIXI from 'pixi.js';
 import { useCylinderStore } from '@/store/cylinderStore';
 import { Needle } from '@/types/cylinder';
-
-interface NeedleCylinderProps {
-  width?: number;
-  height?: number;
-}
 
 const COLORS = {
   cylinderBase: 0x2a3f5f,
@@ -20,10 +15,7 @@ const COLORS = {
   ringInner: 0x1e3a5f,
 };
 
-export default function NeedleCylinder({
-  width = 500,
-  height = 500,
-}: NeedleCylinderProps) {
+export default function NeedleCylinder() {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<PIXI.Renderer | null>(null);
   const stageRef = useRef<PIXI.Container | null>(null);
@@ -31,6 +23,9 @@ export default function NeedleCylinder({
   const needleSpritesRef = useRef<PIXI.Graphics[]>([]);
   const animationRef = useRef<number>(0);
   const isMounted = useRef(true);
+  const isRunningRef = useRef(true);
+  const rotationSpeedRef = useRef(1);
+  const [size, setSize] = useState(400);
 
   const {
     needles,
@@ -42,9 +37,32 @@ export default function NeedleCylinder({
   } = useCylinderStore();
 
   useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
+
+  useEffect(() => {
+    rotationSpeedRef.current = rotationSpeed;
+  }, [rotationSpeed]);
+
+  useEffect(() => {
     isMounted.current = true;
 
     if (!containerRef.current) return;
+
+    const updateSize = () => {
+      if (!containerRef.current) return;
+      const containerWidth = containerRef.current.clientWidth;
+      const newSize = Math.min(containerWidth, 480);
+      setSize(Math.max(newSize, 200));
+    };
+
+    updateSize();
+
+    const resizeObserver = new ResizeObserver(updateSize);
+    resizeObserver.observe(containerRef.current);
+
+    const width = size;
+    const height = size;
 
     const renderer = new PIXI.Renderer({
       width,
@@ -105,7 +123,7 @@ export default function NeedleCylinder({
     centerDot.endFill();
     cylinderGroup.addChild(centerDot);
 
-    createNeedles(cylinderGroup, needles, patternPeriod, highRiskThreshold);
+    createNeedles(cylinderGroup, needles, patternPeriod, highRiskThreshold, width, height);
 
     let lastTime = performance.now();
 
@@ -115,9 +133,9 @@ export default function NeedleCylinder({
       const deltaTime = (currentTime - lastTime) / 1000;
       lastTime = currentTime;
 
-      if (cylinderGroupRef.current && isRunning) {
+      if (cylinderGroupRef.current && isRunningRef.current) {
         cylinderGroupRef.current.rotation +=
-        rotationSpeed * deltaTime * Math.PI * 0.5;
+        rotationSpeedRef.current * deltaTime * Math.PI * 0.5;
       }
 
       rendererRef.current.render(stageRef.current);
@@ -128,6 +146,7 @@ export default function NeedleCylinder({
 
     return () => {
       isMounted.current = false;
+      resizeObserver.disconnect();
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
       }
@@ -137,7 +156,7 @@ export default function NeedleCylinder({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [size]);
 
   useEffect(() => {
     if (!cylinderGroupRef.current) return;
@@ -145,15 +164,19 @@ export default function NeedleCylinder({
       cylinderGroupRef.current,
       needles,
       patternPeriod,
-      highRiskThreshold
+      highRiskThreshold,
+      size,
+      size
     );
-  }, [needles, patternPeriod, highRiskThreshold]);
+  }, [needles, patternPeriod, highRiskThreshold, size]);
 
   function createNeedles(
     container: PIXI.Container,
     needleData: Needle[],
     period: number,
-    riskThreshold: number
+    riskThreshold: number,
+    width: number,
+    height: number
   ) {
     needleSpritesRef.current.forEach((sprite) => {
       container.removeChild(sprite);
@@ -163,6 +186,7 @@ export default function NeedleCylinder({
 
     const radius = Math.min(width, height) / 2 - 60;
     const total = needleData.length;
+    const needleSize = Math.max(4, Math.min(10, width / 48));
 
     for (let i = 0; i < total; i++) {
       const angle = (i / total) * Math.PI * 2 - Math.PI / 2;
@@ -179,21 +203,21 @@ export default function NeedleCylinder({
         const color = isHighRisk ? COLORS.needleHighRisk : COLORS.needleEnabled;
 
         needleGraphic.beginFill(color);
-        needleGraphic.drawCircle(0, 0, 10);
+        needleGraphic.drawCircle(0, 0, needleSize);
         needleGraphic.endFill();
 
         needleGraphic.beginFill(color, 0.3);
-        needleGraphic.drawCircle(0, 0, 16);
+        needleGraphic.drawCircle(0, 0, needleSize + 6);
         needleGraphic.endFill();
       } else {
         needleGraphic.beginFill(COLORS.needleDisabled);
-        needleGraphic.drawCircle(0, 0, 7);
+        needleGraphic.drawCircle(0, 0, needleSize - 3);
         needleGraphic.endFill();
       }
 
       if (isPatternMarker && needle.enabled) {
         needleGraphic.lineStyle(2, COLORS.patternMarker, 1);
-        needleGraphic.drawCircle(0, 0, 14);
+        needleGraphic.drawCircle(0, 0, needleSize + 4);
       }
 
       needleGraphic.x = x;
@@ -226,7 +250,8 @@ export default function NeedleCylinder({
       ref={containerRef}
       style={{
         width: '100%',
-        height: '100%',
+        maxWidth: '480px',
+        aspectRatio: '1 / 1',
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',

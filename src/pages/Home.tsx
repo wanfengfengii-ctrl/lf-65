@@ -117,15 +117,7 @@ export default function Home() {
                 </Group>
               </Group>
 
-              <div
-                style={{
-                  width: '100%',
-                  maxWidth: 480,
-                  aspectRatio: '1 / 1',
-                }}
-              >
-                <NeedleCylinder width={480} height={480} />
-              </div>
+              <NeedleCylinder />
 
               <Group mt="xs">
                 <Info size={14} color="#6c7a8c" />

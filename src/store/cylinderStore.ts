@@ -113,7 +113,7 @@ export function useCylinderStats() {
   const highRiskCount = needles.filter(
     (n) => n.enabled && n.tension > highRiskThreshold
   ).length;
-  const patternRepeats = Math.floor(enabledCount / patternPeriod) || 0;
+  const patternRepeats = Math.floor(totalNeedles / patternPeriod) || 0;
   const averageTension =
     enabledCount > 0
       ? needles
