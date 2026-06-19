@@ -1,5 +1,5 @@
 import { Container, Grid, Title, Text, Group, Paper, Tabs } from '@mantine/core';
-import { Cpu, Info, BarChart3, ArrowRightLeft, Bell, Flame, Layers, Activity } from 'lucide-react';
+import { Cpu, Info, BarChart3, ArrowRightLeft, Layers, Activity, AlertTriangle, Flame } from 'lucide-react';
 import NeedleCylinder from '@/components/NeedleCylinder';
 import ControlPanel from '@/components/ControlPanel';
 import StatsPanel from '@/components/StatsPanel';
@@ -20,6 +20,7 @@ export default function Home() {
     schemes,
     warnings,
     yarnFeeders,
+    yarnSimulationEnabled,
     showYarnPath,
     showRiskHighlight,
     checkYarnWarnings,
@@ -31,6 +32,15 @@ export default function Home() {
   const errorCount = warnings.filter((w) => w.level === 'error').length;
   const warningCount = warnings.filter((w) => w.level === 'warning').length;
   const yarnBreakCount = yarnSimulationStats?.breakWarnings?.length || 0;
+  const yarnWarningCount = warnings.filter((w) =>
+    ['break_risk', 'excessive_stretch', 'high_wear', 'delivery_fluctuation', 'angle_violation'].includes(w.type)
+  ).length;
+
+  const stabilityScore = yarnSimulationStats?.analysisResult?.overallStability;
+  const breakRiskScore = yarnSimulationStats?.analysisResult?.breakRiskScore;
+  const maxStretchPeak = yarnSimulationStats?.analysisResult?.maxStretchPeak;
+  const wearZones = yarnSimulationStats?.analysisResult?.criticalWearZones;
+  const avgFluctuation = yarnSimulationStats?.analysisResult?.avgFluctuation;
 
   useEffect(() => {
     checkYarnWarnings();
@@ -93,7 +103,7 @@ export default function Home() {
                       | 🔥 热力模式
                     </Text>
                   )}
-                  {showYarnPath && (
+                  {yarnSimulationEnabled && showYarnPath && (
                     <Text size="xs" c="orange.4">
                       | 🧵 纱线可见
                     </Text>
@@ -245,11 +255,11 @@ export default function Home() {
                     value="yarn"
                     leftSection={<Layers size={14} />}
                     rightSection={
-                      yarnBreakCount > 0 ? (
+                      yarnWarningCount > 0 ? (
                         <span
                           style={{
                             display: 'inline-block',
-                            background: '#ff4757',
+                            background: yarnBreakCount > 0 ? '#ff4757' : '#ffa502',
                             color: '#fff',
                             borderRadius: 10,
                             padding: '0 6px',
@@ -257,7 +267,7 @@ export default function Home() {
                             fontWeight: 600,
                           }}
                         >
-                          {yarnBreakCount}
+                          {yarnWarningCount}
                         </span>
                       ) : null
                     }
@@ -278,7 +288,7 @@ export default function Home() {
                   </Tabs.Tab>
                   <Tabs.Tab
                     value="warnings"
-                    leftSection={<Bell size={14} />}
+                    leftSection={<AlertTriangle size={14} />}
                     rightSection={
                       errorCount + warningCount > 0 ? (
                         <span
@@ -301,7 +311,7 @@ export default function Home() {
                   </Tabs.Tab>
                   <Tabs.Tab
                     value="simulation"
-                    leftSection={<Flame size={14} />}
+                    leftSection={<Activity size={14} />}
                   >
                     运行模拟
                   </Tabs.Tab>
@@ -332,9 +342,158 @@ export default function Home() {
 
           <Grid.Col span={{ base: 12, md: 3 }} order={{ base: 3, md: 3 }}>
             <Stack gap="md">
+              <Paper
+                p="md"
+                radius="md"
+                style={{
+                  background: 'rgba(26, 41, 66, 0.9)',
+                  border: `1px solid ${
+                    stabilityScore !== undefined && stabilityScore < 60
+                      ? 'rgba(255, 71, 87, 0.5)'
+                      : 'rgba(0, 212, 255, 0.3)'
+                  }`,
+                  backdropFilter: 'blur(10px)',
+                }}
+              >
+                <Group justify="space-between" mb="sm">
+                  <Title order={5} c="cyan.4">
+                    📊 实时状态概览
+                  </Title>
+                </Group>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <Paper
+                    p="xs"
+                    radius="sm"
+                    style={{
+                      background: 'rgba(10, 22, 40, 0.6)',
+                      border: '1px solid rgba(0, 212, 255, 0.2)',
+                    }}
+                  >
+                    <Text size="xs" c="dimmed">
+                      综合稳定性
+                    </Text>
+                    <Text
+                      size="lg"
+                      fw={700}
+                      c={
+                        stabilityScore === undefined
+                          ? 'dimmed'
+                          : stabilityScore >= 80
+                          ? 'green.4'
+                          : stabilityScore >= 60
+                          ? 'yellow.4'
+                          : 'red.4'
+                      }
+                    >
+                      {stabilityScore !== undefined
+                        ? `${stabilityScore.toFixed(0)}分`
+                        : '--'}
+                    </Text>
+                  </Paper>
+
+                  <Paper
+                    p="xs"
+                    radius="sm"
+                    style={{
+                      background: 'rgba(10, 22, 40, 0.6)',
+                      border: '1px solid rgba(0, 212, 255, 0.2)',
+                    }}
+                  >
+                    <Text size="xs" c="dimmed">
+                      断线风险
+                    </Text>
+                    <Text
+                      size="lg"
+                      fw={700}
+                      c={
+                        breakRiskScore === undefined
+                          ? 'dimmed'
+                          : breakRiskScore < 40
+                          ? 'green.4'
+                          : breakRiskScore < 70
+                          ? 'yellow.4'
+                          : 'red.4'
+                      }
+                    >
+                      {breakRiskScore !== undefined
+                        ? `${breakRiskScore.toFixed(0)}%`
+                        : '--'}
+                    </Text>
+                  </Paper>
+
+                  <Paper
+                    p="xs"
+                    radius="sm"
+                    style={{
+                      background: 'rgba(10, 22, 40, 0.6)',
+                      border: '1px solid rgba(0, 212, 255, 0.2)',
+                    }}
+                  >
+                    <Text size="xs" c="dimmed">
+                      送纱波动
+                    </Text>
+                    <Text
+                      size="lg"
+                      fw={700}
+                      c={
+                        avgFluctuation === undefined
+                          ? 'dimmed'
+                          : avgFluctuation < 10
+                          ? 'green.4'
+                          : avgFluctuation < 20
+                          ? 'yellow.4'
+                          : 'red.4'
+                      }
+                    >
+                      {avgFluctuation !== undefined
+                        ? `${avgFluctuation.toFixed(1)}%`
+                        : '--'}
+                    </Text>
+                  </Paper>
+
+                  <Paper
+                    p="xs"
+                    radius="sm"
+                    style={{
+                      background: 'rgba(10, 22, 40, 0.6)',
+                      border: '1px solid rgba(0, 212, 255, 0.2)',
+                    }}
+                  >
+                    <Text size="xs" c="dimmed">
+                      最大拉伸
+                    </Text>
+                    <Text
+                      size="lg"
+                      fw={700}
+                      c={
+                        maxStretchPeak === undefined
+                          ? 'dimmed'
+                          : maxStretchPeak < 8
+                          ? 'green.4'
+                          : maxStretchPeak < 15
+                          ? 'yellow.4'
+                          : 'red.4'
+                      }
+                    >
+                      {maxStretchPeak !== undefined
+                        ? `${maxStretchPeak.toFixed(1)}%`
+                        : '--'}
+                    </Text>
+                  </Paper>
+                </div>
+
+                {wearZones && wearZones.length > 0 ? (
+                  <Group mt="sm">
+                    <Text size="xs" c="orange.4">
+                      ⚠️ 检测到 {wearZones.length} 处易磨损区
+                    </Text>
+                  </Group>
+                ) : null}
+              </Paper>
+
               <WarningPanel />
               <SimulationPanel />
-              <YarnAnalysisPanel />
             </Stack>
           </Grid.Col>
         </Grid>

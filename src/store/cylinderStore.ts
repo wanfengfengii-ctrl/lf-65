@@ -655,11 +655,12 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
   },
 
   toggleContinuousSimulation: () => {
-    set((state) => ({
-      continuousSimulation: !state.continuousSimulation,
-      simulationStats: state.continuousSimulation
-        ? state.simulationStats
-        : {
+    set((state) => {
+      const nextContinuous = !state.continuousSimulation;
+      if (nextContinuous) {
+        return {
+          continuousSimulation: true,
+          simulationStats: state.simulationStats ?? {
             totalRuntime: 0,
             totalRotations: 0,
             avgTensionOverTime: 0,
@@ -671,9 +672,7 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
               currentRisk: 0,
             })),
           },
-      yarnSimulationStats: state.continuousSimulation
-        ? state.yarnSimulationStats
-        : {
+          yarnSimulationStats: state.yarnSimulationStats ?? {
             totalRuntime: 0,
             totalRotations: 0,
             deliveryHistory: {},
@@ -683,7 +682,13 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
             lastFrame: null,
             analysisResult: null,
           },
-    }));
+        };
+      } else {
+        return {
+          continuousSimulation: false,
+        };
+      }
+    });
   },
 
   updateSimulationStats: (stats: Partial<SimulationStats>) => {
