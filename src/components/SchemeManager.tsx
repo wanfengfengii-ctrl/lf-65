@@ -36,7 +36,10 @@ export default function SchemeManager() {
     schemes,
     currentSchemeId,
     compareSchemeId,
-    saveScheme,
+    saveCurrentScheme,
+    saveAsNewScheme,
+    renameScheme,
+    duplicateScheme,
     loadScheme,
     deleteScheme,
     setCompareScheme,
@@ -50,20 +53,41 @@ export default function SchemeManager() {
   const [editingScheme, setEditingScheme] = useState<PatternScheme | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [saveMode, setSaveMode] = useState<'saveCurrent' | 'saveAsNew' | 'rename'>('saveCurrent');
+
   const currentScheme = schemes.find((s) => s.id === currentSchemeId);
 
   const handleSave = () => {
     if (!schemeName.trim()) return;
-    saveScheme(schemeName.trim(), schemeDescription.trim() || undefined);
+
+    switch (saveMode) {
+      case 'saveCurrent':
+        saveCurrentScheme(schemeName.trim(), schemeDescription.trim() || undefined);
+        break;
+      case 'saveAsNew':
+        saveAsNewScheme(schemeName.trim(), schemeDescription.trim() || undefined);
+        break;
+      case 'rename':
+        if (editingScheme) {
+          renameScheme(editingScheme.id, schemeName.trim(), schemeDescription.trim() || undefined);
+        }
+        break;
+    }
+
     setSaveModalOpen(false);
     setSchemeName('');
     setSchemeDescription('');
     setEditingScheme(null);
   };
 
-  const openSaveModal = (scheme?: PatternScheme) => {
-    if (scheme) {
+  const openSaveModal = (mode: 'saveCurrent' | 'saveAsNew' | 'rename', scheme?: PatternScheme) => {
+    setSaveMode(mode);
+    if (mode === 'rename' && scheme) {
       setEditingScheme(scheme);
+      setSchemeName(scheme.name);
+      setSchemeDescription(scheme.description || '');
+    } else if (mode === 'saveCurrent' && scheme) {
+      setEditingScheme(null);
       setSchemeName(scheme.name);
       setSchemeDescription(scheme.description || '');
     } else {
@@ -123,10 +147,7 @@ export default function SchemeManager() {
   };
 
   const handleDuplicate = (scheme: PatternScheme) => {
-    saveScheme(
-      `${scheme.name} (副本)`,
-      scheme.description ? `${scheme.description} - 副本` : undefined
-    );
+    duplicateScheme(scheme.id);
   };
 
   return (
@@ -163,7 +184,7 @@ export default function SchemeManager() {
                 <ActionIcon
                   variant="light"
                   color="green"
-                  onClick={() => openSaveModal()}
+                  onClick={() => openSaveModal('saveAsNew')}
                   size="sm"
                 >
                   <Plus size={16} />
@@ -203,7 +224,7 @@ export default function SchemeManager() {
                 size="xs"
                 variant="light"
                 color="cyan"
-                onClick={() => openSaveModal(currentScheme || undefined)}
+                onClick={() => openSaveModal('saveCurrent', currentScheme || undefined)}
               >
                 保存
               </Button>
@@ -294,7 +315,7 @@ export default function SchemeManager() {
                         </Menu.Item>
                         <Menu.Item
                           leftSection={<Edit3 size={14} />}
-                          onClick={() => openSaveModal(scheme)}
+                          onClick={() => openSaveModal('rename', scheme)}
                         >
                           重命名
                         </Menu.Item>
@@ -358,7 +379,13 @@ export default function SchemeManager() {
         title={
           <Group gap="xs">
             <Save size={18} color="#00d4ff" />
-            <Text>{editingScheme ? '更新方案' : '保存新方案'}</Text>
+            <Text>
+              {saveMode === 'saveCurrent'
+                ? '保存当前方案'
+                : saveMode === 'saveAsNew'
+                ? '新建方案'
+                : `重命名方案`}
+            </Text>
           </Group>
         }
         centered
@@ -422,7 +449,11 @@ export default function SchemeManager() {
               onClick={handleSave}
               disabled={!schemeName.trim()}
             >
-              {editingScheme ? '更新' : '保存'}
+              {saveMode === 'saveCurrent'
+                ? '保存'
+                : saveMode === 'saveAsNew'
+                ? '创建'
+                : '确认'}
             </Button>
           </Group>
         </Stack>
