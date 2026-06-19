@@ -20,6 +20,7 @@ import {
   CircleDot,
   Repeat,
   Gauge,
+  Flame,
 } from 'lucide-react';
 import { useCylinderStore } from '@/store/cylinderStore';
 import {
@@ -28,6 +29,7 @@ import {
   MIN_SPEED,
   MAX_SPEED,
   HIGH_RISK_THRESHOLD,
+  MAX_NEEDLES,
 } from '@/types/cylinder';
 
 export default function ControlPanel() {
@@ -37,12 +39,14 @@ export default function ControlPanel() {
     baseTension,
     rotationSpeed,
     isRunning,
+    heatMode,
     setTotalNeedles,
     setPatternPeriod,
     setBaseTension,
     setRotationSpeed,
     toggleRunning,
     resetAll,
+    toggleHeatMode,
   } = useCylinderStore();
 
   return (
@@ -71,6 +75,54 @@ export default function ControlPanel() {
 
         <Divider c="dark.4" />
 
+        <Group grow>
+          <Button
+            leftSection={isRunning ? <Pause size={16} /> : <Play size={16} />}
+            color={isRunning ? 'red' : 'green'}
+            onClick={toggleRunning}
+            variant="filled"
+          >
+            {isRunning ? '暂停' : '启动'}
+          </Button>
+          <Button
+            leftSection={<RotateCcw size={16} />}
+            color="gray"
+            onClick={resetAll}
+            variant="light"
+          >
+            重置
+          </Button>
+        </Group>
+
+        <Divider c="dark.4" />
+
+        <Stack gap="sm">
+          <Group gap="xs" justify="space-between">
+            <Group gap="xs">
+              <Flame
+                size={18}
+                color={heatMode ? '#ff6b35' : '#6c7a8c'}
+              />
+              <Text size="sm" fw={500}>
+                断针风险热力模式
+              </Text>
+            </Group>
+            <Switch
+              checked={heatMode}
+              onChange={toggleHeatMode}
+              color="orange"
+              size="sm"
+            />
+          </Group>
+          <Text size="xs" c="dimmed">
+            {heatMode
+              ? '🔥 显示累计风险热力分布（需先开启连续运行模拟）'
+              : '显示当前张力状态'}
+          </Text>
+        </Stack>
+
+        <Divider c="dark.4" />
+
         <Stack gap="sm">
           <Group gap="xs">
             <CircleDot size={18} color="#00d4ff" />
@@ -82,7 +134,7 @@ export default function ControlPanel() {
             value={totalNeedles}
             onChange={(val) => setTotalNeedles(Number(val) || 1)}
             min={1}
-            max={200}
+            max={MAX_NEEDLES}
             size="sm"
             styles={{
               input: {
@@ -96,7 +148,7 @@ export default function ControlPanel() {
             value={totalNeedles}
             onChange={(val) => setTotalNeedles(val)}
             min={1}
-            max={200}
+            max={MAX_NEEDLES}
             step={1}
             size="sm"
             color="cyan"
@@ -193,25 +245,6 @@ export default function ControlPanel() {
         </Stack>
 
         <Divider c="dark.4" />
-
-        <Group grow>
-          <Button
-            leftSection={isRunning ? <Pause size={16} /> : <Play size={16} />}
-            color={isRunning ? 'red' : 'green'}
-            onClick={toggleRunning}
-            variant="filled"
-          >
-            {isRunning ? '暂停' : '启动'}
-          </Button>
-          <Button
-            leftSection={<RotateCcw size={16} />}
-            color="gray"
-            onClick={resetAll}
-            variant="light"
-          >
-            重置
-          </Button>
-        </Group>
 
         <Stack gap="xs">
           <Text size="xs" fw={500} c="dimmed">

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as PIXI from 'pixi.js';
-import { useCylinderStore } from '@/store/cylinderStore';
-import { Needle } from '@/types/cylinder';
+import { useCylinderStore, useHeatMapData } from '@/store/cylinderStore';
+import { Needle, HIGH_RISK_THRESHOLD } from '@/types/cylinder';
 
 const COLORS = {
   cylinderBase: 0x2a3f5f,
@@ -9,6 +9,8 @@ const COLORS = {
   needleEnabled: 0x00d4ff,
   needleDisabled: 0x3a4a6a,
   needleHighRisk: 0xff4757,
+  needleMediumRisk: 0xff6b35,
+  needleLowRisk: 0xffd700,
   patternMarker: 0xffd700,
   center: 0x0a1628,
   ringOuter: 0x3d5a80,
@@ -26,6 +28,7 @@ export default function NeedleCylinder() {
   const isRunningRef = useRef(true);
   const rotationSpeedRef = useRef(1);
   const [size, setSize] = useState(400);
+  const lastRiskUpdateRef = useRef(0);
 
   const {
     needles,
@@ -34,7 +37,13 @@ export default function NeedleCylinder() {
     isRunning,
     highRiskThreshold,
     toggleNeedle,
+    heatMode,
+    continuousSimulation,
+    simulationStats,
+    updateSimulationStats,
   } = useCylinderStore();
+
+  const heatMapData = useHeatMapData();
 
   useEffect(() => {
     isRunningRef.current = isRunning;
@@ -123,9 +132,10 @@ export default function NeedleCylinder() {
     centerDot.endFill();
     cylinderGroup.addChild(centerDot);
 
-    createNeedles(cylinderGroup, needles, patternPeriod, highRiskThreshold, width, height);
+    createNeedles(cylinderGroup, needles, patternPeriod, highRiskThreshold, width, height, heatMode, heatMapData);
 
     let lastTime = performance.now();
+    let rotationAccumulator = 0;
 
     const animate = (currentTime: number) => {
       if (!isMounted.current || !rendererRef.current || !stageRef.current) return;
@@ -134,8 +144,21 @@ export default function NeedleCylinder() {
       lastTime = currentTime;
 
       if (cylinderGroupRef.current && isRunningRef.current) {
-        cylinderGroupRef.current.rotation +=
-        rotationSpeedRef.current * deltaTime * Math.PI * 0.5;
+        const rotationDelta = rotationSpeedRef.current * deltaTime * Math.PI * 0.5;
+        cylinderGroupRef.current.rotation += rotationDelta;
+        
+        if (continuousSimulation) {
+          rotationAccumulator += Math.abs(rotationDelta);
+          
+          if (currentTime - lastRiskUpdateRef.current > 100) {
+            lastRiskUpdateRef.current = currentTime;
+            
+            const rotationsPerUpdate = rotationAccumulator / (Math.PI * 2);
+            rotationAccumulator = 0;
+            
+            updateSimulationStatsFromRunning(deltaTime, rotationsPerUpdate);
+          }
+        }
       }
 
       rendererRef.current.render(stageRef.current);
@@ -166,9 +189,63 @@ export default function NeedleCylinder() {
       patternPeriod,
       highRiskThreshold,
       size,
-      size
+      size,
+      heatMode,
+      heatMapData
     );
-  }, [needles, patternPeriod, highRiskThreshold, size]);
+  }, [needles, patternPeriod, highRiskThreshold, size, heatMode, heatMapData]);
+
+  function updateSimulationStatsFromRunning(deltaTime: number, rotations: number) {
+    const { simulationStats, needles, baseTension, rotationSpeed } = useCylinderStore.getState();
+    if (!simulationStats) return;
+
+    const newRuntime = simulationStats.totalRuntime + deltaTime;
+    const newRotations = simulationStats.totalRotations + rotations;
+    
+    const enabledNeedles = needles.filter((n) => n.enabled);
+    const currentAvgTension =
+      enabledNeedles.length > 0
+        ? enabledNeedles.reduce((sum, n) => sum + n.tension, 0) / enabledNeedles.length
+        : 0;
+    
+    const newAvgTension =
+      (simulationStats.avgTensionOverTime * simulationStats.totalRuntime +
+        currentAvgTension * deltaTime) /
+      newRuntime;
+
+    const currentMaxTension = Math.max(...needles.map((n) => n.tension));
+    const newMaxTension = Math.max(simulationStats.maxTensionReached, currentMaxTension);
+
+    const speedFactor = rotationSpeed / 5;
+    const tensionFactor = baseTension / 50;
+
+    const newRiskStats = simulationStats.needleRiskStats.map((stat) => {
+      const needle = needles.find((n) => n.id === stat.id);
+      if (!needle || !needle.enabled) return stat;
+
+      const tensionRisk = Math.max(0, (needle.tension - 50) / 50);
+      const riskIncrement = tensionRisk * speedFactor * tensionFactor * deltaTime * 10;
+      
+      const isHighRisk = needle.tension > HIGH_RISK_THRESHOLD;
+      
+      return {
+        ...stat,
+        totalRiskScore: stat.totalRiskScore + riskIncrement,
+        highRiskDuration: isHighRisk
+          ? stat.highRiskDuration + deltaTime
+          : stat.highRiskDuration,
+        currentRisk: tensionRisk,
+      };
+    });
+
+    updateSimulationStats({
+      totalRuntime: newRuntime,
+      totalRotations: newRotations,
+      avgTensionOverTime: newAvgTension,
+      maxTensionReached: newMaxTension,
+      needleRiskStats: newRiskStats,
+    });
+  }
 
   function createNeedles(
     container: PIXI.Container,
@@ -176,7 +253,9 @@ export default function NeedleCylinder() {
     period: number,
     riskThreshold: number,
     width: number,
-    height: number
+    height: number,
+    isHeatMode: boolean,
+    heatData: Array<{ id: number; color: string; riskLevel: number }>
   ) {
     needleSpritesRef.current.forEach((sprite) => {
       container.removeChild(sprite);
@@ -194,21 +273,37 @@ export default function NeedleCylinder() {
       const y = Math.sin(angle) * radius;
 
       const needle = needleData[i];
+      const heatDatum = heatData.find((h) => h.id === needle.id);
       const isHighRisk = needle.enabled && needle.tension > riskThreshold;
       const isPatternMarker = i % period === 0;
 
       const needleGraphic = new PIXI.Graphics();
 
       if (needle.enabled) {
-        const color = isHighRisk ? COLORS.needleHighRisk : COLORS.needleEnabled;
+        let color = COLORS.needleEnabled;
+        
+        if (isHeatMode && heatDatum) {
+          color = parseInt(heatDatum.color.replace('#', ''), 16);
+        } else if (isHighRisk) {
+          color = COLORS.needleHighRisk;
+        } else if (needle.tension > 60) {
+          color = COLORS.needleLowRisk;
+        }
 
         needleGraphic.beginFill(color);
         needleGraphic.drawCircle(0, 0, needleSize);
         needleGraphic.endFill();
 
-        needleGraphic.beginFill(color, 0.3);
-        needleGraphic.drawCircle(0, 0, needleSize + 6);
-        needleGraphic.endFill();
+        if (isHeatMode && heatDatum) {
+          const glowSize = needleSize + 6 + heatDatum.riskLevel * 10;
+          needleGraphic.beginFill(color, 0.2 + heatDatum.riskLevel * 0.3);
+          needleGraphic.drawCircle(0, 0, glowSize);
+          needleGraphic.endFill();
+        } else {
+          needleGraphic.beginFill(color, 0.3);
+          needleGraphic.drawCircle(0, 0, needleSize + 6);
+          needleGraphic.endFill();
+        }
       } else {
         needleGraphic.beginFill(COLORS.needleDisabled);
         needleGraphic.drawCircle(0, 0, needleSize - 3);

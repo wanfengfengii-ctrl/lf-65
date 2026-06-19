@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import {
   Paper,
   Title,
@@ -9,6 +10,7 @@ import {
   SimpleGrid,
   ScrollArea,
   Tooltip,
+  Progress,
 } from '@mantine/core';
 import {
   BarChart,
@@ -32,25 +34,43 @@ import { useCylinderStore, useCylinderStats } from '@/store/cylinderStore';
 import { HIGH_RISK_THRESHOLD } from '@/types/cylinder';
 
 export default function StatsPanel() {
-  const { needles } = useCylinderStore();
+  const { needles, heatMode, simulationStats } = useCylinderStore();
   const stats = useCylinderStats();
 
   const highRiskNeedles = needles.filter(
     (n) => n.enabled && n.tension > HIGH_RISK_THRESHOLD
   );
 
-  const tensionData = needles.slice(0, 24).map((n) => ({
-    id: `#${n.id + 1}`,
-    tension: Math.round(n.tension),
-    enabled: n.enabled,
-    highRisk: n.enabled && n.tension > HIGH_RISK_THRESHOLD,
-  }));
+  const tensionData = useMemo(() => {
+    return needles.slice(0, 24).map((n) => {
+      let riskLevel = 0;
+      if (heatMode && simulationStats) {
+        const riskStat = simulationStats.needleRiskStats.find(
+          (r) => r.id === n.id
+        );
+        riskLevel = riskStat
+          ? Math.min(riskStat.totalRiskScore / 10, 100)
+          : 0;
+      }
+      return {
+        id: `#${n.id + 1}`,
+        tension: Math.round(n.tension),
+        risk: riskLevel,
+        enabled: n.enabled,
+        highRisk: n.enabled && n.tension > HIGH_RISK_THRESHOLD,
+      };
+    });
+  }, [needles, heatMode, simulationStats]);
 
   const getBarColor = (entry: { enabled: boolean; highRisk: boolean }) => {
     if (!entry.enabled) return '#3a4a6a';
     if (entry.highRisk) return '#ff4757';
     return '#00d4ff';
   };
+
+  const enabledRatio = stats.totalNeedles > 0
+    ? (stats.enabledCount / stats.totalNeedles) * 100
+    : 0;
 
   return (
     <Paper
@@ -64,10 +84,17 @@ export default function StatsPanel() {
     >
       <Stack gap="md">
         <Group justify="space-between" align="center">
-          <Title order={4} c="cyan.4">
-            数据统计
-          </Title>
-          <Activity size={18} color="#00d4ff" />
+          <Group gap="xs">
+            <Activity size={18} color="#00d4ff" />
+            <Title order={5} c="cyan.4">
+              数据统计
+            </Title>
+          </Group>
+          {heatMode && (
+            <Badge size="sm" color="orange" variant="dot">
+              热力模式
+            </Badge>
+          )}
         </Group>
 
         <Divider c="dark.4" />
@@ -90,6 +117,13 @@ export default function StatsPanel() {
                 / {stats.totalNeedles}
               </Text>
             </Text>
+            <Progress
+              value={enabledRatio}
+              size="xs"
+              mt="xs"
+              color="green"
+              radius="sm"
+            />
           </Paper>
 
           <Paper
@@ -106,6 +140,13 @@ export default function StatsPanel() {
             <Text size="xl" fw={700} c="gray.5">
               {stats.disabledCount}
             </Text>
+            <Progress
+              value={100 - enabledRatio}
+              size="xs"
+              mt="xs"
+              color="gray"
+              radius="sm"
+            />
           </Paper>
 
           <Paper
@@ -125,6 +166,9 @@ export default function StatsPanel() {
                 次
               </Text>
             </Text>
+            <Text size="xs" c="dimmed" mt="xs">
+              周期: {stats.patternPeriod} 针
+            </Text>
           </Paper>
 
           <Paper
@@ -138,12 +182,23 @@ export default function StatsPanel() {
                 平均张力
               </Text>
             </Group>
-            <Text size="xl" fw={700} c="cyan.4">
+            <Text
+              size="xl"
+              fw={700}
+              c={stats.averageTension > HIGH_RISK_THRESHOLD ? 'red.4' : 'cyan.4'}
+            >
               {stats.averageTension.toFixed(1)}
               <Text span size="sm" c="dimmed" ml={4}>
                 N
               </Text>
             </Text>
+            <Progress
+              value={stats.averageTension}
+              size="xs"
+              mt="xs"
+              color={stats.averageTension > HIGH_RISK_THRESHOLD ? 'red' : 'cyan'}
+              radius="sm"
+            />
           </Paper>
         </SimpleGrid>
 
@@ -155,7 +210,11 @@ export default function StatsPanel() {
               stats.highRiskCount > 0
                 ? 'rgba(255, 71, 87, 0.1)'
                 : 'rgba(46, 213, 115, 0.1)',
-            border: `1px solid ${stats.highRiskCount > 0 ? 'rgba(255, 71, 87, 0.3)' : 'rgba(46, 213, 115, 0.3)'}`,
+            border: `1px solid ${
+              stats.highRiskCount > 0
+                ? 'rgba(255, 71, 87, 0.3)'
+                : 'rgba(46, 213, 115, 0.3)'
+            }`,
           }}
         >
           <Group justify="space-between" align="center">
@@ -180,9 +239,14 @@ export default function StatsPanel() {
         <Divider c="dark.4" />
 
         <Stack gap="xs">
-          <Text size="sm" fw={500}>
-            张力分布 (前24针)
-          </Text>
+          <Group justify="space-between">
+            <Text size="sm" fw={500}>
+              {heatMode ? '累计风险分布 (前24针)' : '张力分布 (前24针)'}
+            </Text>
+            <Text size="xs" c="dimmed">
+              {heatMode ? '热力模式' : '当前状态'}
+            </Text>
+          </Group>
           <Paper
             p="sm"
             radius="sm"
@@ -190,7 +254,10 @@ export default function StatsPanel() {
           >
             <div style={{ height: 140, width: '100%', minWidth: 200 }}>
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={tensionData} barSize={12}>
+                <BarChart
+                  data={tensionData}
+                  barSize={12}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke="#2a3f5f" />
                   <XAxis
                     dataKey="id"
@@ -213,9 +280,15 @@ export default function StatsPanel() {
                       color: '#fff',
                       fontSize: '12px',
                     }}
-                    formatter={(value: number) => [`${value} N`, '张力']}
+                    formatter={(value: number, name: string) => [
+                      `${value} ${name === 'risk' ? '' : 'N'}`,
+                      heatMode && name === 'risk' ? '累计风险' : '张力',
+                    ]}
                   />
-                  <Bar dataKey="tension" radius={[2, 2, 0, 0]}>
+                  <Bar
+                    dataKey={heatMode ? 'risk' : 'tension'}
+                    radius={[2, 2, 0, 0]}
+                  >
                     {tensionData.map((entry, index) => (
                       <Cell
                         key={`cell-${index}`}
@@ -254,30 +327,44 @@ export default function StatsPanel() {
                   </Text>
                 </Paper>
               ) : (
-                highRiskNeedles.map((needle) => (
-                  <Paper
-                    key={needle.id}
-                    p="xs"
-                    radius="sm"
-                    style={{
-                      background: 'rgba(255, 71, 87, 0.1)',
-                      border: '1px solid rgba(255, 71, 87, 0.2)',
-                    }}
-                  >
-                    <Group justify="space-between">
-                      <Group gap="xs">
-                        <Badge color="red" size="sm">
-                          #{needle.id + 1}
-                        </Badge>
+                highRiskNeedles.map((needle) => {
+                  let cumulativeRisk = 0;
+                  if (heatMode && simulationStats) {
+                    const riskStat = simulationStats.needleRiskStats.find(
+                      (r) => r.id === needle.id
+                    );
+                    cumulativeRisk = riskStat?.totalRiskScore || 0;
+                  }
+                  return (
+                    <Paper
+                      key={needle.id}
+                      p="xs"
+                      radius="sm"
+                      style={{
+                        background: 'rgba(255, 71, 87, 0.1)',
+                        border: '1px solid rgba(255, 71, 87, 0.2)',
+                      }}
+                    >
+                      <Group justify="space-between">
+                        <Group gap="xs">
+                          <Badge color="red" size="sm">
+                            #{needle.id + 1}
+                          </Badge>
+                          {heatMode && cumulativeRisk > 0 && (
+                            <Badge size="xs" color="orange" variant="outline">
+                              累计风险: {cumulativeRisk.toFixed(1)}
+                            </Badge>
+                          )}
+                        </Group>
+                        <Tooltip label="张力值">
+                          <Text size="sm" fw={600} c="red.4">
+                            {needle.tension.toFixed(1)} N
+                          </Text>
+                        </Tooltip>
                       </Group>
-                      <Tooltip label="张力值">
-                        <Text size="sm" fw={600} c="red.4">
-                          {needle.tension.toFixed(1)} N
-                        </Text>
-                      </Tooltip>
-                    </Group>
-                  </Paper>
-                ))
+                    </Paper>
+                  );
+                })
               )}
             </Stack>
           </ScrollArea>
@@ -292,7 +379,9 @@ export default function StatsPanel() {
             📊 花型节奏: 每 {stats.patternPeriod} 针重复一次，
             共 {stats.patternRepeats} 个完整周期。
             启用率:{' '}
-            {((stats.enabledCount / stats.totalNeedles) * 100).toFixed(1)}%
+            <Text span fw={600} c={enabledRatio > 70 ? 'green.4' : enabledRatio > 30 ? 'yellow.4' : 'red.4'}>
+              {enabledRatio.toFixed(1)}%
+            </Text>
           </Text>
         </Paper>
       </Stack>
