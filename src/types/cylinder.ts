@@ -243,6 +243,14 @@ export interface CylinderState {
   showCrowdingHighlight: boolean;
   showTensionCoupling: boolean;
   qualityPrediction: QualityPrediction | null;
+  optimizationTargets: OptimizationTarget;
+  optimizationConstraints: OptimizationConstraints;
+  optimizationResult: OptimizationResult | null;
+  isOptimizing: boolean;
+  selectedCandidateId: string | null;
+  workOrders: WorkOrder[];
+  scheduleResult: ScheduleResult | null;
+  isScheduling: boolean;
 }
 
 export interface CylinderActions {
@@ -295,6 +303,17 @@ export interface CylinderActions {
   toggleShowTensionCoupling: () => void;
   runMultiYarnSimulation: () => void;
   predictQuality: () => QualityPrediction | null;
+  setOptimizationTargets: (targets: Partial<OptimizationTarget>) => void;
+  setOptimizationConstraints: (constraints: Partial<OptimizationConstraints>) => void;
+  startOptimizationSearch: () => void;
+  stopOptimizationSearch: () => void;
+  selectOptimizationCandidate: (id: string) => void;
+  applyOptimizationCandidate: (id: string) => void;
+  addWorkOrder: (order: Omit<WorkOrder, 'id' | 'status'>) => void;
+  removeWorkOrder: (id: string) => void;
+  updateWorkOrder: (id: string, updates: Partial<WorkOrder>) => void;
+  runBatchScheduling: () => void;
+  applyScheduleScheme: (orderId: string) => void;
 }
 
 export type CylinderStore = CylinderState & CylinderActions;
@@ -412,3 +431,163 @@ export const INTERFERENCE_THRESHOLD_MEDIUM = 8;
 export const CROWDING_THRESHOLD_LOW = 2;
 export const CROWDING_THRESHOLD_MEDIUM = 3;
 export const COUPLING_THRESHOLD = 0.15;
+
+export interface OptimizationTarget {
+  qualityTarget: number;
+  maxBreakRisk: number;
+  minWearLifetime: number;
+  productivityTarget: number;
+}
+
+export interface OptimizationConstraints {
+  tensionRange: [number, number];
+  speedRange: [number, number];
+  feederPositionRange: [number, number];
+  guideAngleRange: [number, number];
+  patternPeriodRange: [number, number];
+}
+
+export interface OptimizationCandidate {
+  id: string;
+  name: string;
+  score: number;
+  rank: number;
+  baseTension: number;
+  rotationSpeed: number;
+  patternPeriod: number;
+  yarnFeeders: YarnFeederConfig[];
+  materialCombination: string[];
+  qualityPrediction: QualityPrediction;
+  productivity: number;
+  advantages: string[];
+  disadvantages: string[];
+  tradeoffNotes: string;
+}
+
+export interface OptimizationResult {
+  candidates: OptimizationCandidate[];
+  searchIterations: number;
+  bestScore: number;
+  searchTime: number;
+}
+
+export interface WorkOrder {
+  id: string;
+  orderNo: string;
+  sockType: string;
+  batchSize: number;
+  deadline: number;
+  priority: 'low' | 'medium' | 'high';
+  requirements: {
+    qualityGrade: 'A' | 'B' | 'C' | 'D';
+    minWearLifetime: number;
+    maxBreakRisk: number;
+  };
+  recommendedSchemeId?: string;
+  status: 'pending' | 'scheduled' | 'processing' | 'completed';
+}
+
+export interface ScheduleItem {
+  orderId: string;
+  orderNo: string;
+  sockType: string;
+  batchSize: number;
+  priority: 'low' | 'medium' | 'high';
+  schemeId?: string;
+  schemeName?: string;
+  estimatedTime: number;
+  qualityPrediction: QualityPrediction;
+  startTime?: number;
+  endTime?: number;
+  warnings: string[];
+}
+
+export interface ScheduleResult {
+  items: ScheduleItem[];
+  totalTime: number;
+  totalOrders: number;
+  averageQuality: number;
+  bottleneckOrders: string[];
+  optimizationSuggestions: string[];
+}
+
+export interface OptimizationState {
+  targets: OptimizationTarget;
+  constraints: OptimizationConstraints;
+  result: OptimizationResult | null;
+  isSearching: boolean;
+  selectedCandidateId: string | null;
+  workOrders: WorkOrder[];
+  scheduleResult: ScheduleResult | null;
+  isScheduling: boolean;
+}
+
+export interface OptimizationActions {
+  setOptimizationTargets: (targets: Partial<OptimizationTarget>) => void;
+  setOptimizationConstraints: (constraints: Partial<OptimizationConstraints>) => void;
+  startOptimizationSearch: () => void;
+  stopOptimizationSearch: () => void;
+  selectOptimizationCandidate: (id: string) => void;
+  applyOptimizationCandidate: (id: string) => void;
+  addWorkOrder: (order: Omit<WorkOrder, 'id' | 'status'>) => void;
+  removeWorkOrder: (id: string) => void;
+  updateWorkOrder: (id: string, updates: Partial<WorkOrder>) => void;
+  runBatchScheduling: () => void;
+  applyScheduleScheme: (orderId: string) => void;
+}
+
+export const DEFAULT_OPTIMIZATION_TARGETS: OptimizationTarget = {
+  qualityTarget: 80,
+  maxBreakRisk: 30,
+  minWearLifetime: 5000,
+  productivityTarget: 100,
+};
+
+export const DEFAULT_OPTIMIZATION_CONSTRAINTS: OptimizationConstraints = {
+  tensionRange: [30, 70],
+  speedRange: [0.5, 5],
+  feederPositionRange: [0, 47],
+  guideAngleRange: [20, 70],
+  patternPeriodRange: [4, 16],
+};
+
+export const DEFAULT_WORK_ORDERS: Omit<WorkOrder, 'id' | 'status'>[] = [
+  {
+    orderNo: 'WO-2024-001',
+    sockType: '运动袜',
+    batchSize: 500,
+    deadline: Date.now() + 86400000 * 3,
+    priority: 'high',
+    requirements: {
+      qualityGrade: 'A',
+      minWearLifetime: 8000,
+      maxBreakRisk: 20,
+    },
+  },
+  {
+    orderNo: 'WO-2024-002',
+    sockType: '商务袜',
+    batchSize: 300,
+    deadline: Date.now() + 86400000 * 5,
+    priority: 'medium',
+    requirements: {
+      qualityGrade: 'B',
+      minWearLifetime: 6000,
+      maxBreakRisk: 30,
+    },
+  },
+  {
+    orderNo: 'WO-2024-003',
+    sockType: '休闲袜',
+    batchSize: 800,
+    deadline: Date.now() + 86400000 * 7,
+    priority: 'low',
+    requirements: {
+      qualityGrade: 'C',
+      minWearLifetime: 4000,
+      maxBreakRisk: 40,
+    },
+  },
+];
+
+export const SOCK_TYPES = ['运动袜', '商务袜', '休闲袜', '棉袜', '羊毛袜', '丝袜', '功能袜', '儿童袜'];

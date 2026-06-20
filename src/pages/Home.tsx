@@ -1,5 +1,5 @@
 import { Container, Grid, Title, Text, Group, Paper, Tabs, Badge } from '@mantine/core';
-import { Cpu, Info, BarChart3, ArrowRightLeft, Layers, Activity, AlertTriangle, Flame, Sparkles, LineChart, Gauge, ShieldCheck } from 'lucide-react';
+import { Cpu, Info, BarChart3, ArrowRightLeft, Layers, Activity, AlertTriangle, Flame, Sparkles, ShieldCheck, Settings2, Calendar } from 'lucide-react';
 import NeedleCylinder from '@/components/NeedleCylinder';
 import ControlPanel from '@/components/ControlPanel';
 import StatsPanel from '@/components/StatsPanel';
@@ -11,6 +11,8 @@ import YarnFeederPanel from '@/components/YarnFeederPanel';
 import YarnAnalysisPanel from '@/components/YarnAnalysisPanel';
 import YarnMaterialPanel from '@/components/YarnMaterialPanel';
 import QualityPredictionPanel from '@/components/QualityPredictionPanel';
+import OptimizationPanel from '@/components/OptimizationPanel';
+import SchedulePanel from '@/components/SchedulePanel';
 import { useCylinderStore } from '@/store/cylinderStore';
 import { HIGH_RISK_THRESHOLD, WARNING_STRETCH_THRESHOLD } from '@/types/cylinder';
 import { useEffect } from 'react';
@@ -407,6 +409,18 @@ export default function Home() {
                   >
                     运行模拟
                   </Tabs.Tab>
+                  <Tabs.Tab
+                    value="optimization"
+                    leftSection={<Settings2 size={14} />}
+                  >
+                    智能寻优
+                  </Tabs.Tab>
+                  <Tabs.Tab
+                    value="schedule"
+                    leftSection={<Calendar size={14} />}
+                  >
+                    排程管理
+                  </Tabs.Tab>
                 </Tabs.List>
 
                 <Tabs.Panel value="yarn" pt="md">
@@ -435,6 +449,14 @@ export default function Home() {
 
                 <Tabs.Panel value="simulation" pt="md">
                   <SimulationPanel />
+                </Tabs.Panel>
+
+                <Tabs.Panel value="optimization" pt="md">
+                  <OptimizationPanel />
+                </Tabs.Panel>
+
+                <Tabs.Panel value="schedule" pt="md">
+                  <SchedulePanel />
                 </Tabs.Panel>
               </Tabs>
             </Stack>

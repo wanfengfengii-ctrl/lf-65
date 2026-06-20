@@ -53,6 +53,20 @@ import {
   CROWDING_THRESHOLD_LOW,
   CROWDING_THRESHOLD_MEDIUM,
   COUPLING_THRESHOLD,
+  OptimizationTarget,
+  OptimizationConstraints,
+  OptimizationCandidate,
+  OptimizationResult,
+  WorkOrder,
+  ScheduleItem,
+  ScheduleResult,
+  DEFAULT_OPTIMIZATION_TARGETS,
+  DEFAULT_OPTIMIZATION_CONSTRAINTS,
+  DEFAULT_WORK_ORDERS,
+  MIN_FRICTION,
+  MAX_FRICTION,
+  MIN_GUIDE_ANGLE,
+  MAX_GUIDE_ANGLE,
 } from '@/types/cylinder';
 
 function generateId(): string {
@@ -784,6 +798,14 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
   showCrowdingHighlight: true,
   showTensionCoupling: true,
   qualityPrediction: null,
+  optimizationTargets: { ...DEFAULT_OPTIMIZATION_TARGETS },
+  optimizationConstraints: { ...DEFAULT_OPTIMIZATION_CONSTRAINTS },
+  optimizationResult: null,
+  isOptimizing: false,
+  selectedCandidateId: null,
+  workOrders: DEFAULT_WORK_ORDERS.map(o => ({ ...o, id: generateId(), status: 'pending' as const })),
+  scheduleResult: null,
+  isScheduling: false,
 
   toggleNeedle: (id: number) => {
     set((state) => ({
@@ -1593,6 +1615,419 @@ export const useCylinderStore = create<CylinderStore>((set, get) => ({
 
     set({ qualityPrediction: result.qualityPrediction });
     return result.qualityPrediction;
+  },
+
+  setOptimizationTargets: (targets: Partial<OptimizationTarget>) => {
+    set((state) => ({
+      optimizationTargets: { ...state.optimizationTargets, ...targets },
+    }));
+  },
+
+  setOptimizationConstraints: (constraints: Partial<OptimizationConstraints>) => {
+    set((state) => ({
+      optimizationConstraints: { ...state.optimizationConstraints, ...constraints },
+    }));
+  },
+
+  startOptimizationSearch: () => {
+    set({ isOptimizing: true, optimizationResult: null });
+
+    setTimeout(() => {
+      const state = get();
+      const {
+        optimizationTargets,
+        optimizationConstraints,
+        yarnMaterials,
+        totalNeedles,
+        needles,
+      } = state;
+
+      const candidates: OptimizationCandidate[] = [];
+      const iterations = 30;
+      const startTime = Date.now();
+
+      for (let i = 0; i < iterations; i++) {
+        const tension = optimizationConstraints.tensionRange[0] +
+          Math.random() * (optimizationConstraints.tensionRange[1] - optimizationConstraints.tensionRange[0]);
+        const speed = optimizationConstraints.speedRange[0] +
+          Math.random() * (optimizationConstraints.speedRange[1] - optimizationConstraints.speedRange[0]);
+        const period = Math.floor(
+          optimizationConstraints.patternPeriodRange[0] +
+          Math.random() * (optimizationConstraints.patternPeriodRange[1] - optimizationConstraints.patternPeriodRange[0])
+        );
+
+        const feederCount = 2 + Math.floor(Math.random() * 3);
+        const feeders: YarnFeederConfig[] = [];
+        const usedMaterials: string[] = [];
+
+        for (let j = 0; j < feederCount; j++) {
+          const material = yarnMaterials[Math.floor(Math.random() * yarnMaterials.length)];
+          if (!usedMaterials.includes(material.name)) usedMaterials.push(material.name);
+
+          const position = optimizationConstraints.feederPositionRange[0] +
+            Math.random() * (optimizationConstraints.feederPositionRange[1] - optimizationConstraints.feederPositionRange[0]);
+          const angle = optimizationConstraints.guideAngleRange[0] +
+            Math.random() * (optimizationConstraints.guideAngleRange[1] - optimizationConstraints.guideAngleRange[0]);
+
+          feeders.push({
+            id: generateId(),
+            name: `送纱嘴 ${j + 1}`,
+            position: clamp(position, 0, totalNeedles - 1),
+            yarnLength: 100 + Math.random() * 200,
+            guideAngle: clamp(angle, MIN_GUIDE_ANGLE, MAX_GUIDE_ANGLE),
+            frictionCoefficient: clamp(MIN_FRICTION + Math.random() * 0.3, MIN_FRICTION, MAX_FRICTION),
+            color: YARN_FEEDER_COLORS[j % YARN_FEEDER_COLORS.length],
+            enabled: true,
+            materialId: material.id,
+          });
+        }
+
+        const testNeedles = needles.map(n => ({
+          ...n,
+          tension: clamp(tension + (Math.random() - 0.5) * 15, MIN_TENSION, MAX_TENSION),
+        }));
+
+        const simResult = runFullMultiYarnSimulation(
+          feeders,
+          testNeedles,
+          totalNeedles,
+          tension,
+          period,
+          yarnMaterials,
+          null,
+          null
+        );
+
+        const quality = simResult.qualityPrediction;
+        const productivity = speed * 60 * (totalNeedles / 48);
+
+        const qualityScore = quality.overallQualityScore;
+        const breakRiskScore = Math.max(0, 100 - quality.breakageProbability);
+        const wearScore = Math.min(100, (quality.wearLifetime / 10000) * 100);
+        const productivityScore = Math.min(100, (productivity / optimizationTargets.productivityTarget) * 100);
+
+        const qualityWeight = 0.35;
+        const breakRiskWeight = 0.25;
+        const wearWeight = 0.2;
+        const productivityWeight = 0.2;
+
+        const totalScore =
+          qualityScore * qualityWeight +
+          breakRiskScore * breakRiskWeight +
+          wearScore * wearWeight +
+          productivityScore * productivityWeight;
+
+        const advantages: string[] = [];
+        const disadvantages: string[] = [];
+
+        if (quality.overallQualityScore >= 80) advantages.push('质量优秀');
+        else if (quality.overallQualityScore >= 65) advantages.push('质量良好');
+        else disadvantages.push('质量一般');
+
+        if (quality.breakageProbability <= 25) advantages.push('断线风险低');
+        else if (quality.breakageProbability >= 50) disadvantages.push('断线风险较高');
+
+        if (quality.wearLifetime >= 7000) advantages.push('磨损寿命长');
+        else if (quality.wearLifetime <= 4000) disadvantages.push('磨损寿命短');
+
+        if (productivity >= optimizationTargets.productivityTarget) advantages.push('产能达标');
+        else disadvantages.push('产能不足');
+
+        if (simResult.interferences.length === 0) advantages.push('无路径干涉');
+        else if (simResult.interferences.filter(i => i.interferenceLevel === 'high').length > 0) disadvantages.push('存在严重干涉');
+
+        if (simResult.crowdingZones.filter(c => c.severity === 'high').length === 0) advantages.push('无严重拥挤');
+        else disadvantages.push('局部拥挤严重');
+
+        const tradeoffNotes = quality.breakageProbability < 30 && productivity < 80
+          ? '高质量低产速，适合高端订单'
+          : quality.breakageProbability > 50 && productivity > 120
+          ? '高产速高风险，需监控维护'
+          : '质量与产能相对均衡';
+
+        candidates.push({
+          id: generateId(),
+          name: `方案 ${i + 1}`,
+          score: Number(totalScore.toFixed(1)),
+          rank: 0,
+          baseTension: Number(tension.toFixed(1)),
+          rotationSpeed: Number(speed.toFixed(2)),
+          patternPeriod: period,
+          yarnFeeders: feeders,
+          materialCombination: usedMaterials,
+          qualityPrediction: quality,
+          productivity: Number(productivity.toFixed(1)),
+          advantages,
+          disadvantages,
+          tradeoffNotes,
+        });
+      }
+
+      candidates.sort((a, b) => b.score - a.score);
+      candidates.forEach((c, i) => { c.rank = i + 1; });
+
+      const topCandidates = candidates.slice(0, 8);
+
+      const result: OptimizationResult = {
+        candidates: topCandidates,
+        searchIterations: iterations,
+        bestScore: topCandidates[0]?.score || 0,
+        searchTime: Date.now() - startTime,
+      };
+
+      set({
+        optimizationResult: result,
+        isOptimizing: false,
+        selectedCandidateId: topCandidates[0]?.id || null,
+      });
+    }, 800);
+  },
+
+  stopOptimizationSearch: () => {
+    set({ isOptimizing: false });
+  },
+
+  selectOptimizationCandidate: (id: string) => {
+    set({ selectedCandidateId: id });
+  },
+
+  applyOptimizationCandidate: (id: string) => {
+    const state = get();
+    const candidate = state.optimizationResult?.candidates.find(c => c.id === id);
+    if (!candidate) return;
+
+    set({
+      baseTension: candidate.baseTension,
+      rotationSpeed: candidate.rotationSpeed,
+      patternPeriod: candidate.patternPeriod,
+      yarnFeeders: candidate.yarnFeeders.map(f => ({ ...f })),
+      needles: state.needles.map((n, i) => ({
+        ...n,
+        tension: clamp(candidate.baseTension + Math.sin(i * 0.5) * 5, MIN_TENSION, MAX_TENSION),
+      })),
+    });
+
+    setTimeout(() => {
+      get().checkForWarnings();
+      get().checkYarnWarnings();
+      get().runMultiYarnSimulation();
+      get().predictQuality();
+    }, 50);
+  },
+
+  addWorkOrder: (order: Omit<WorkOrder, 'id' | 'status'>) => {
+    const newOrder: WorkOrder = {
+      ...order,
+      id: generateId(),
+      status: 'pending',
+    };
+    set((state) => ({ workOrders: [...state.workOrders, newOrder] }));
+  },
+
+  removeWorkOrder: (id: string) => {
+    set((state) => ({
+      workOrders: state.workOrders.filter(o => o.id !== id),
+    }));
+  },
+
+  updateWorkOrder: (id: string, updates: Partial<WorkOrder>) => {
+    set((state) => ({
+      workOrders: state.workOrders.map(o =>
+        o.id === id ? { ...o, ...updates } : o
+      ),
+    }));
+  },
+
+  runBatchScheduling: () => {
+    set({ isScheduling: true, scheduleResult: null });
+
+    setTimeout(() => {
+      const state = get();
+      const { workOrders, yarnMaterials, totalNeedles, needles } = state;
+
+      const items: ScheduleItem[] = [];
+      let currentTime = Date.now();
+      const priorityOrder = { high: 0, medium: 1, low: 2 };
+
+      const sortedOrders = [...workOrders].sort((a, b) => {
+        const priorityDiff = priorityOrder[a.priority] - priorityOrder[b.priority];
+        if (priorityDiff !== 0) return priorityDiff;
+        return a.deadline - b.deadline;
+      });
+
+      const qualityGradeScores: Record<string, number> = { A: 85, B: 70, C: 55, D: 40 };
+
+      for (const order of sortedOrders) {
+        const targetQuality = qualityGradeScores[order.requirements.qualityGrade] || 60;
+        const targetWear = order.requirements.minWearLifetime;
+        const maxBreak = order.requirements.maxBreakRisk;
+
+        let bestScheme: OptimizationCandidate | null = null;
+        let bestScore = -Infinity;
+
+        for (let attempt = 0; attempt < 15; attempt++) {
+          const tension = 30 + Math.random() * 40;
+          const speed = 0.5 + Math.random() * 4;
+          const period = 4 + Math.floor(Math.random() * 12);
+          const feederCount = 2 + Math.floor(Math.random() * 3);
+
+          const feeders: YarnFeederConfig[] = [];
+          for (let j = 0; j < feederCount; j++) {
+            const material = yarnMaterials[Math.floor(Math.random() * yarnMaterials.length)];
+            feeders.push({
+              id: generateId(),
+              name: `送纱嘴 ${j + 1}`,
+              position: (j / feederCount) * totalNeedles,
+              yarnLength: 120 + Math.random() * 150,
+              guideAngle: 25 + Math.random() * 40,
+              frictionCoefficient: 0.08 + Math.random() * 0.2,
+              color: YARN_FEEDER_COLORS[j % YARN_FEEDER_COLORS.length],
+              enabled: true,
+              materialId: material.id,
+            });
+          }
+
+          const testNeedles = needles.map(n => ({
+            ...n,
+            tension: clamp(tension + (Math.random() - 0.5) * 10, MIN_TENSION, MAX_TENSION),
+          }));
+
+          const simResult = runFullMultiYarnSimulation(
+            feeders, testNeedles, totalNeedles, tension, period, yarnMaterials, null, null
+          );
+
+          const quality = simResult.qualityPrediction;
+          const productivity = speed * 60 * (totalNeedles / 48);
+
+          const qualityMatch = quality.overallQualityScore >= targetQuality ? 1 : 0;
+          const wearMatch = quality.wearLifetime >= targetWear ? 1 : 0;
+          const breakMatch = quality.breakageProbability <= maxBreak ? 1 : 0;
+
+          const score = productivity + qualityMatch * 50 + wearMatch * 30 + breakMatch * 20;
+
+          if (score > bestScore && quality.overallQualityScore >= targetQuality * 0.9) {
+            bestScore = score;
+            bestScheme = {
+              id: generateId(),
+              name: `${order.sockType}方案`,
+              score: 0,
+              rank: 0,
+              baseTension: Number(tension.toFixed(1)),
+              rotationSpeed: Number(speed.toFixed(2)),
+              patternPeriod: period,
+              yarnFeeders: feeders,
+              materialCombination: [],
+              qualityPrediction: quality,
+              productivity: Number(productivity.toFixed(1)),
+              advantages: [],
+              disadvantages: [],
+              tradeoffNotes: '',
+            };
+          }
+        }
+
+        const warnings: string[] = [];
+        if (bestScheme) {
+          if (bestScheme.qualityPrediction.breakageProbability > maxBreak) {
+            warnings.push('断线风险接近上限，建议降低转速');
+          }
+          if (bestScheme.qualityPrediction.wearLifetime < targetWear) {
+            warnings.push('磨损寿命略低于要求，需定期检查');
+          }
+          if (bestScheme.qualityPrediction.overallQualityScore < targetQuality) {
+            warnings.push('质量评分略低于目标等级');
+          }
+        } else {
+          warnings.push('未能找到完全满足要求的方案，已选用最接近方案');
+        }
+
+        const estTime = order.batchSize / (bestScheme?.productivity || 50) * 60;
+        const startTime = currentTime;
+        const endTime = currentTime + estTime * 60 * 1000;
+        currentTime = endTime;
+
+        items.push({
+          orderId: order.id,
+          orderNo: order.orderNo,
+          sockType: order.sockType,
+          batchSize: order.batchSize,
+          priority: order.priority,
+          schemeId: bestScheme?.id,
+          schemeName: bestScheme?.name,
+          estimatedTime: Math.round(estTime),
+          qualityPrediction: bestScheme?.qualityPrediction || {
+            uniformityScore: 60,
+            breakageProbability: 40,
+            wearLifetime: 5000,
+            patternFidelityScore: 65,
+            overallQualityScore: 62,
+            grade: 'C',
+            details: {
+              uniformity: { tensionVariance: 8, densityVariation: 5, needleCoverageRate: 90 },
+              breakage: { maxTensionRatio: 0.6, weakPointCount: 3, fatigueFactor: 2 },
+              wear: { avgWearRate: 30, criticalZoneCount: 2, predictedCycles: 5000 },
+              pattern: { alignmentError: 5, colorShiftIndex: 3, periodAccuracy: 85 },
+            },
+          },
+          startTime,
+          endTime,
+          warnings,
+        });
+      }
+
+      const totalTime = items.length > 0
+        ? Math.round((items[items.length - 1].endTime! - items[0].startTime!) / 60000)
+        : 0;
+
+      const avgQuality = items.length > 0
+        ? items.reduce((s, i) => s + i.qualityPrediction.overallQualityScore, 0) / items.length
+        : 0;
+
+      const bottleneckOrders = items
+        .filter(i => i.warnings.length > 0)
+        .map(i => i.orderNo);
+
+      const suggestions: string[] = [];
+      if (bottleneckOrders.length > 0) {
+        suggestions.push(`${bottleneckOrders.length} 个订单存在风险，建议优先处理`);
+      }
+      if (avgQuality < 70) {
+        suggestions.push('整体质量偏低，建议优化材质组合');
+      }
+      if (totalTime > 1440) {
+        suggestions.push('总排程时间较长，建议增加设备并行生产');
+      }
+      suggestions.push('按优先级排序可确保高优订单按时交付');
+
+      const result: ScheduleResult = {
+        items,
+        totalTime,
+        totalOrders: items.length,
+        averageQuality: Number(avgQuality.toFixed(1)),
+        bottleneckOrders,
+        optimizationSuggestions: suggestions,
+      };
+
+      set({
+        scheduleResult: result,
+        isScheduling: false,
+        workOrders: state.workOrders.map(o => ({
+          ...o,
+          status: 'scheduled' as const,
+        })),
+      });
+    }, 1000);
+  },
+
+  applyScheduleScheme: (orderId: string) => {
+    const state = get();
+    const item = state.scheduleResult?.items.find(i => i.orderId === orderId);
+    if (!item) return;
+
+    const order = state.workOrders.find(o => o.id === orderId);
+    if (order) {
+      state.updateWorkOrder(orderId, { status: 'processing' });
+    }
   },
 }));
 
